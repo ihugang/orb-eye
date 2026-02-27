@@ -9,9 +9,12 @@ A lightweight Android Accessibility Service that exposes the device's UI tree, n
 Orb Eye runs on your Android phone as an Accessibility Service, providing a simple HTTP API at `localhost:7333`. Any AI agent running on the device (via [OpenClaw](https://github.com/openclaw/openclaw) / [BotDrop](https://botdrop.app)) can use it to:
 
 - **See** — Read all UI elements on screen (text, bounds, clickable, editable)
+- **Find** — Locate specific elements with center coordinates ready for tap
+- **Capture** — Take screenshots without root
 - **Hear** — Capture system notifications in real-time
-- **Touch** — Click, tap, swipe, long-press with precision
+- **Touch** — Click, tap, swipe, long-press, pinch with precision
 - **Speak** — Inject text directly into input fields (CJK supported)
+- **Copy** — Read and write the system clipboard
 - **Wait** — Block until the UI changes (event-driven, no polling)
 - **Know** — Get current app/activity info instantly
 
@@ -25,58 +28,142 @@ Read the full story: [Orb 的五感觉醒](https://x.com/karry_viber)
 
 ## API
 
+### Core
+
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/ping` | Health check, returns version |
-| GET | `/screen` | All UI elements (text, bounds, clickable, editable) |
+| GET | `/screen` | All UI elements (text, bounds, centerX/centerY) |
 | GET | `/tree` | Full accessibility node tree (JSON) |
 | GET | `/info` | Current app package & activity |
-| GET | `/notify` | Buffered notifications (up to 50) |
-| GET | `/wait` | Block until UI changes (timeout param) |
-| POST | `/click` | Click by text or bounds |
+| GET | `/focused` | Get currently focused element |
+
+### Interaction
+
+| Method | Path | Description |
+|--------|------|-------------|
 | POST | `/tap` | Tap at exact coordinates |
+| POST | `/click` | Click by text, description, or resource ID |
+| POST | `/find` | **v2.1** Find element, return center coordinates |
+| POST | `/input` | Text input with clear/append modes |
+| POST | `/setText` | Direct text injection into input field |
+| POST | `/scroll` | Scroll with direction, target, and repeat |
 | POST | `/swipe` | Swipe gesture |
 | POST | `/longpress` | Long press at coordinates |
-| POST | `/setText` | Inject text into focused input field |
-| POST | `/input` | Legacy text input (SET_TEXT action) |
+| POST | `/gesture` | **v2.1** Composite gestures (pinch, multi-stroke) |
 | POST | `/back` | Press back button |
 | POST | `/home` | Press home button |
+| POST | `/recents` | Open recent apps |
+
+### Sensing
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/screenshot` | **v2.1** Screenshot as base64 PNG (no root needed) |
+| GET | `/notify` | Buffered notifications with package filtering |
+| GET | `/wait` | Block until UI changes (timeout param) |
+| GET/POST | `/clipboard` | **v2.1** Read/write system clipboard |
 
 ### Examples
 
 ```bash
-# Get all screen elements
+# Health check
+curl http://localhost:7333/ping
+# → {"ok":true,"service":"orb-eye","version":"2.1"}
+
+# Get all screen elements (now with center coordinates!)
 curl http://localhost:7333/screen
+# → {"elements":[{"text":"Send","centerX":990,"centerY":1850,"clickable":true,...}]}
 
-# Click a button by text
-curl -X POST http://localhost:7333/click -H 'Content-Type: application/json' -d '{"text":"Send"}'
+# Find a specific button — get its center for tapping
+curl -X POST http://localhost:7333/find \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Send","clickable":true}'
+# → {"ok":true,"centerX":990,"centerY":1850,"matchCount":1,...}
 
-# Tap at coordinates
-curl -X POST http://localhost:7333/tap -H 'Content-Type: application/json' -d '{"x":540,"y":1200}'
+# Then tap it
+curl -X POST http://localhost:7333/tap \
+  -H 'Content-Type: application/json' \
+  -d '{"x":990,"y":1850}'
 
-# Get notifications
-curl http://localhost:7333/notify
+# Click by text (finds and clicks in one call)
+curl -X POST http://localhost:7333/click \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Send"}'
 
-# Type text into focused field
-curl -X POST http://localhost:7333/setText -H 'Content-Type: application/json' -d '{"text":"Hello World"}'
+# Type text (clears field first by default)
+curl -X POST http://localhost:7333/input \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Hello World"}'
+
+# Clear input field only
+curl -X POST http://localhost:7333/input \
+  -H 'Content-Type: application/json' \
+  -d '{"clear":true}'
+
+# Take screenshot (no root required, API 30+)
+curl http://localhost:7333/screenshot
+# → {"ok":true,"image":"data:image/png;base64,...","width":1080,"height":2400}
+
+# Read/write clipboard
+curl http://localhost:7333/clipboard
+curl -X POST http://localhost:7333/clipboard \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"copied text"}'
+
+# Scroll down 3 times
+curl -X POST http://localhost:7333/scroll \
+  -H 'Content-Type: application/json' \
+  -d '{"direction":"down","count":3}'
+
+# Pinch to zoom out
+curl -X POST http://localhost:7333/gesture \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"pinch_out","x":540,"y":1200,"distance":200}'
+
+# Get notifications (excluding system noise)
+curl 'http://localhost:7333/notify?exclude=com.android.systemui,com.google.android.gms'
 
 # Wait for UI change (5 second timeout)
-curl http://localhost:7333/wait?timeout=5000
+curl 'http://localhost:7333/wait?timeout=5000'
+
+# Filter screen elements
+curl 'http://localhost:7333/screen?editable=true'
+curl 'http://localhost:7333/screen?scrollable=true'
+curl 'http://localhost:7333/screen?package=com.twitter.android'
 ```
+
+### Error Handling
+
+All endpoints return unified error format with machine-readable codes:
+
+```json
+{"ok": false, "error": "No editable field found", "code": "NO_EDITABLE"}
+```
+
+| Code | Meaning |
+|------|---------|
+| `NOT_FOUND` | Element, window, or route not found |
+| `NO_EDITABLE` | No editable input field available |
+| `TIMEOUT` | Operation timed out |
+| `INVALID_ARGS` | Missing or invalid request parameters |
+| `NOT_SUPPORTED` | Feature requires higher API level |
+| `SCREENSHOT_FAILED` | Screenshot capture failed |
+| `INTERNAL_ERROR` | Unexpected exception |
 
 ## Install
 
-1. Download `app-debug.apk` from [Releases](https://github.com/KarryViber/orb-eye/releases) or build from source
-2. Install: `adb install app-debug.apk`
+1. Download `orb-eye-v2.1.apk` from [Releases](https://github.com/KarryViber/orb-eye/releases)
+2. Install: `adb install orb-eye-v2.1.apk`
 3. Enable Accessibility Service: Settings → Accessibility → Orb Eye → On
-4. Verify: `curl http://localhost:7333/ping` → `{"ok":true,"version":"2.0"}`
+4. Verify: `curl http://localhost:7333/ping` → `{"ok":true,"version":"2.1"}`
 
 ## Build from source
 
 ```bash
 # Requires Android SDK
 ./gradlew assembleDebug
-# APK at app/build/outputs/apk/debug/app-debug.apk
+# APK at app/build/outputs/apk/debug/orb-eye-v2.1.apk
 ```
 
 ## Architecture
@@ -86,10 +173,17 @@ Your AI Agent (OpenClaw / BotDrop)
     ↓ HTTP localhost:7333
 Orb Eye (Android Accessibility Service)
     ↓ Android Accessibility API
-Device UI / Notifications / Input
+Device UI / Notifications / Input / Screenshots / Clipboard
 ```
 
-One Java file. One service. One HTTP server. ~500 lines total.
+One Java file. One service. One HTTP server. ~1,300 lines total.
+
+- **Android 8.0+** (API 26) for core features
+- **Android 11+** (API 30) for `/screenshot`
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## License
 
@@ -97,5 +191,5 @@ MIT
 
 ## Author
 
-Built by **Orb** 🔮 — an AI living on an old Android phone.  
+Built by **Orb** 🔮 — an AI living on an old Android phone.
 Human companion: [@karry_viber](https://x.com/karry_viber)

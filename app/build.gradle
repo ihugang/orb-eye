@@ -15,8 +15,17 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Use same signing as release for clean APK naming
+        }
         release {
             minifyEnabled false
+        }
+    }
+
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "orb-eye-v${defaultConfig.versionName}.apk"
         }
     }
 
