@@ -7,6 +7,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Build;
@@ -20,6 +21,11 @@ import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.Text;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -29,6 +35,8 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -50,14 +58,14 @@ public class OrbAccessibilityService extends AccessibilityService {
     private final CopyOnWriteArrayList<JSONObject> notificationBuffer = new CopyOnWriteArrayList<>();
 
     // ===== Wait for UI change =====
-    private volatile CountDownLatch uiChangeLatch = new CountDownLatch(1);
-    private volatile String lastWindowPackage = "";
-    private volatile String lastWindowClass = "";
+    volatile CountDownLatch uiChangeLatch = new CountDownLatch(1);
+    volatile String lastWindowPackage = "";
+    volatile String lastWindowClass = "";
 
     @Override
     public void onServiceConnected() {
         super.onServiceConnected();
-        Log.i(TAG, "Orb Eye v2.1 service connected");
+        Log.i(TAG, "Orb Eye v2.3 service connected");
         startHttpServer();
     }
 
@@ -218,7 +226,7 @@ public class OrbAccessibilityService extends AccessibilityService {
 
         switch (route) {
             case "/ping":
-                return "{\"ok\":true,\"service\":\"orb-eye\",\"version\":\"2.1\"}";
+                return "{\"ok\":true,\"service\":\"orb-eye\",\"version\":\"2.3\"}";
 
             case "/tree":
                 return getUiTree(query);
@@ -283,15 +291,116 @@ public class OrbAccessibilityService extends AccessibilityService {
             case "/screenshot":
                 return handleScreenshot();
 
+            case "/ocr":
+                if ("GET".equals(method)) {
+                    return handleOcr(queryToJson(query));
+                }
+                return handleOcr(body == null || body.isEmpty() ? new JSONObject() : new JSONObject(body));
+
+            case "/ocr-screen":
+                // Alias of /ocr for explicit "current screen OCR" semantics.
+                if ("GET".equals(method)) {
+                    return handleOcr(queryToJson(query));
+                }
+                return handleOcr(body == null || body.isEmpty() ? new JSONObject() : new JSONObject(body));
+
             case "/clipboard":
                 return "GET".equals(method) ? handleClipboardGet() : handleClipboardSet(new JSONObject(body));
 
             case "/gesture":
                 return handleGesture(new JSONObject(body));
 
+            case "/exec":
+                return handleExec(body.isEmpty() ? new JSONObject() : new JSONObject(body));
+
             default:
                 return errorJson("Unknown route: " + route, "NOT_FOUND");
         }
+    }
+
+    // ===== /exec — JavaScript scripting engine (v2.3) =====
+
+    private OrbScriptEngine scriptEngine;
+
+    private String handleExec(JSONObject body) throws Exception {
+        String script = body.optString("script", "");
+        if (script.isEmpty()) {
+            return errorJson("Provide 'script' field with JavaScript code", "INVALID_ARGS");
+        }
+        int timeoutMs = body.optInt("timeout", 60000);
+        if (scriptEngine == null) {
+            scriptEngine = new OrbScriptEngine(this);
+        }
+        return scriptEngine.execute(script, timeoutMs);
+    }
+
+    // Package-visible helpers for OrbScriptEngine to reuse existing implementations.
+
+    String handleScreenshotForScript() throws Exception {
+        return handleScreenshot();
+    }
+
+    String handleOcrForScript() throws Exception {
+        Bitmap source = captureScreenshotBitmap();
+        if (source == null) return "[]";
+        try {
+            List<OcrLineData> lines = runOcr(source);
+            JSONArray arr = new JSONArray();
+            for (OcrLineData line : lines) {
+                arr.put(lineToJson(line, 0, 0));
+            }
+            return arr.toString();
+        } finally {
+            if (!source.isRecycled()) source.recycle();
+        }
+    }
+
+    String handleOcrFindForScript(String text) throws Exception {
+        Bitmap source = captureScreenshotBitmap();
+        if (source == null) return null;
+        try {
+            List<OcrLineData> lines = runOcr(source);
+            for (OcrLineData line : lines) {
+                if (line.text != null && line.text.contains(text)) {
+                    return lineToJson(line, 0, 0).toString();
+                }
+            }
+            return null;
+        } finally {
+            if (!source.isRecycled()) source.recycle();
+        }
+    }
+
+    String getClipboardText() throws Exception {
+        final String[] holder = {""};
+        final CountDownLatch latch = new CountDownLatch(1);
+        new Handler(Looper.getMainLooper()).post(() -> {
+            try {
+                ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm != null && cm.hasPrimaryClip()) {
+                    ClipData.Item item = cm.getPrimaryClip().getItemAt(0);
+                    CharSequence t = item.getText();
+                    holder[0] = t != null ? t.toString() : "";
+                }
+            } catch (Exception e) { /* ignore */ }
+            finally { latch.countDown(); }
+        });
+        latch.await(3, TimeUnit.SECONDS);
+        return holder[0];
+    }
+
+    void setClipboardText(String text) throws Exception {
+        final CountDownLatch latch = new CountDownLatch(1);
+        new Handler(Looper.getMainLooper()).post(() -> {
+            try {
+                ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm != null) {
+                    cm.setPrimaryClip(ClipData.newPlainText("orb", text));
+                }
+            } catch (Exception e) { /* ignore */ }
+            finally { latch.countDown(); }
+        });
+        latch.await(3, TimeUnit.SECONDS);
     }
 
     // ===== Notifications =====
@@ -420,6 +529,54 @@ public class OrbAccessibilityService extends AccessibilityService {
         }
 
         return result.toString();
+    }
+
+    private JSONObject queryToJson(String query) throws Exception {
+        JSONObject out = new JSONObject();
+        if (query == null || query.isEmpty()) return out;
+
+        String[] pairs = query.split("&");
+        JSONObject region = new JSONObject();
+        boolean hasRegion = false;
+        for (String pair : pairs) {
+            if (pair == null || pair.isEmpty()) continue;
+            String[] kv = pair.split("=", 2);
+            String key = URLDecoder.decode(kv[0], StandardCharsets.UTF_8.name());
+            String val = kv.length > 1
+                    ? URLDecoder.decode(kv[1], StandardCharsets.UTF_8.name())
+                    : "";
+
+            switch (key) {
+                case "text":
+                    out.put("text", val);
+                    break;
+                case "contains":
+                    out.put("contains", "true".equalsIgnoreCase(val) || "1".equals(val));
+                    break;
+                case "tap":
+                    out.put("tap", "true".equalsIgnoreCase(val) || "1".equals(val));
+                    break;
+                case "index":
+                    out.put("index", Integer.parseInt(val));
+                    break;
+                case "x":
+                case "y":
+                case "width":
+                case "height":
+                case "left":
+                case "top":
+                case "right":
+                case "bottom":
+                    region.put(key, Integer.parseInt(val));
+                    hasRegion = true;
+                    break;
+                default:
+                    // ignore unknown params
+                    break;
+            }
+        }
+        if (hasRegion) out.put("region", region);
+        return out;
     }
 
     // ===== Swipe gesture =====
@@ -1020,15 +1177,157 @@ public class OrbAccessibilityService extends AccessibilityService {
      * Returns: {"ok":true, "image":"data:image/png;base64,...", "width":W, "height":H}
      */
     private String handleScreenshot() throws Exception {
+        Bitmap bmp = null;
+        try {
+            bmp = captureScreenshotBitmap();
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, baos);
+            String b64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
+
+            JSONObject result = new JSONObject();
+            result.put("ok", true);
+            result.put("image", "data:image/png;base64," + b64);
+            result.put("width", bmp.getWidth());
+            result.put("height", bmp.getHeight());
+            return result.toString();
+        } catch (Exception e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "Screenshot failed";
+            if (msg.contains("API 30+")) return errorJson(msg, "NOT_SUPPORTED");
+            if (msg.contains("timed out")) return errorJson(msg, "TIMEOUT");
+            return errorJson(msg, "SCREENSHOT_FAILED");
+        } finally {
+            if (bmp != null && !bmp.isRecycled()) bmp.recycle();
+        }
+    }
+
+    private static class OcrLineData {
+        String text;
+        Rect bounds;
+
+        OcrLineData(String text, Rect bounds) {
+            this.text = text;
+            this.bounds = bounds;
+        }
+    }
+
+    /**
+     * POST /ocr
+     * Body:
+     *   {"text":"找朋友帮忙付","contains":true,"tap":false,"index":0}
+     *   {"imageBase64":"data:image/png;base64,..."} // optional; default uses current screenshot
+     *   {"region":{"x":100,"y":200,"width":400,"height":300}} // optional crop
+     *
+     * Returns OCR lines with coordinates. If text provided, also returns matches.
+     * If tap=true and a match is selected, performs tap on selected match center.
+     */
+    private String handleOcr(JSONObject body) throws Exception {
+        long startedAt = System.currentTimeMillis();
+        Bitmap source = null;
+        Bitmap input = null;
+        try {
+            String imageBase64 = body.optString("imageBase64", "");
+            boolean useInlineImage = imageBase64 != null && !imageBase64.isEmpty();
+            source = useInlineImage ? decodeBase64Bitmap(imageBase64) : captureScreenshotBitmap();
+            if (source == null) {
+                return errorJson("OCR input image unavailable", "OCR_FAILED");
+            }
+
+            Rect cropRect = null;
+            JSONObject region = body.optJSONObject("region");
+            if (region != null) {
+                cropRect = parseCropRect(region, source.getWidth(), source.getHeight());
+                if (cropRect == null) {
+                    return errorJson("Invalid OCR region", "INVALID_ARGS");
+                }
+                input = Bitmap.createBitmap(source, cropRect.left, cropRect.top, cropRect.width(), cropRect.height());
+            } else {
+                input = source;
+            }
+
+            List<OcrLineData> lines = runOcr(input);
+            int offsetX = cropRect != null ? cropRect.left : 0;
+            int offsetY = cropRect != null ? cropRect.top : 0;
+
+            String targetText = body.optString("text", "");
+            boolean contains = body.optBoolean("contains", true);
+            int index = Math.max(0, body.optInt("index", 0));
+            boolean tap = body.optBoolean("tap", false);
+            long tapDuration = Math.max(30L, body.optLong("tapDuration", 100L));
+
+            JSONArray linesJson = new JSONArray();
+            JSONArray matches = new JSONArray();
+            for (int i = 0; i < lines.size(); i++) {
+                OcrLineData line = lines.get(i);
+                JSONObject item = lineToJson(line, offsetX, offsetY);
+                item.put("index", i);
+                linesJson.put(item);
+
+                if (targetText != null && !targetText.isEmpty()) {
+                    String lineText = line.text != null ? line.text : "";
+                    boolean hit = contains ? lineText.contains(targetText) : lineText.equals(targetText);
+                    if (hit) matches.put(item);
+                }
+            }
+
+            JSONObject result = new JSONObject();
+            result.put("ok", true);
+            result.put("engine", "mlkit_chinese");
+            result.put("source", useInlineImage ? "imageBase64" : "screenshot");
+            result.put("imageWidth", source.getWidth());
+            result.put("imageHeight", source.getHeight());
+            result.put("ocrWidth", input.getWidth());
+            result.put("ocrHeight", input.getHeight());
+            result.put("offsetX", offsetX);
+            result.put("offsetY", offsetY);
+            result.put("lineCount", linesJson.length());
+            result.put("lines", linesJson);
+            result.put("matchCount", matches.length());
+            result.put("matches", matches);
+            result.put("elapsedMs", System.currentTimeMillis() - startedAt);
+
+            if (targetText != null && !targetText.isEmpty()) {
+                boolean matched = matches.length() > index;
+                result.put("matched", matched);
+                result.put("selectedIndex", index);
+                if (matched) {
+                    JSONObject selected = matches.getJSONObject(index);
+                    result.put("selected", selected);
+                    if (tap) {
+                        int x = selected.getInt("centerX");
+                        int y = selected.getInt("centerY");
+                        boolean tapped = dispatchTapPoint(x, y, tapDuration);
+                        result.put("tap", tapped);
+                        result.put("tapX", x);
+                        result.put("tapY", y);
+                    } else {
+                        result.put("tap", false);
+                    }
+                } else {
+                    result.put("selected", JSONObject.NULL);
+                    result.put("tap", false);
+                }
+            }
+
+            return result.toString();
+        } catch (Exception e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "OCR failed";
+            if (msg.contains("API 30+")) return errorJson(msg, "NOT_SUPPORTED");
+            if (msg.contains("timed out")) return errorJson(msg, "TIMEOUT");
+            return errorJson(msg, "OCR_FAILED");
+        } finally {
+            if (input != null && input != source && !input.isRecycled()) input.recycle();
+            if (source != null && !source.isRecycled()) source.recycle();
+        }
+    }
+
+    private Bitmap captureScreenshotBitmap() throws Exception {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            return errorJson("takeScreenshot requires API 30+, device is API " + Build.VERSION.SDK_INT, "NOT_SUPPORTED");
+            throw new IllegalStateException("takeScreenshot requires API 30+, device is API " + Build.VERSION.SDK_INT);
         }
 
         CountDownLatch latch = new CountDownLatch(1);
-        AtomicReference<String> imageRef = new AtomicReference<>(null);
+        AtomicReference<Bitmap> bitmapRef = new AtomicReference<>(null);
         AtomicReference<String> errorRef = new AtomicReference<>(null);
-        AtomicReference<Integer> widthRef = new AtomicReference<>(0);
-        AtomicReference<Integer> heightRef = new AtomicReference<>(0);
 
         takeScreenshot(Display.DEFAULT_DISPLAY,
                 getMainExecutor(),
@@ -1036,22 +1335,22 @@ public class OrbAccessibilityService extends AccessibilityService {
                     @Override
                     public void onSuccess(ScreenshotResult screenshot) {
                         try {
-                            Bitmap bmp = Bitmap.wrapHardwareBuffer(
+                            Bitmap hw = Bitmap.wrapHardwareBuffer(
                                     screenshot.getHardwareBuffer(),
                                     screenshot.getColorSpace()
-                            ).copy(Bitmap.Config.ARGB_8888, false);
-
-                            widthRef.set(bmp.getWidth());
-                            heightRef.set(bmp.getHeight());
-
-                            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                            bmp.compress(Bitmap.CompressFormat.PNG, 100, baos);
-                            String b64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
-                            imageRef.set("data:image/png;base64," + b64);
-                            bmp.recycle();
+                            );
+                            if (hw == null) {
+                                errorRef.set("Bitmap wrap failed");
+                                return;
+                            }
+                            Bitmap bmp = hw.copy(Bitmap.Config.ARGB_8888, false);
+                            bitmapRef.set(bmp);
                         } catch (Exception e) {
                             errorRef.set("Bitmap encode failed: " + e.getMessage());
                         } finally {
+                            try {
+                                screenshot.getHardwareBuffer().close();
+                            } catch (Exception ignored) {}
                             latch.countDown();
                         }
                     }
@@ -1064,15 +1363,135 @@ public class OrbAccessibilityService extends AccessibilityService {
                 });
 
         boolean done = latch.await(10, TimeUnit.SECONDS);
-        if (!done) return errorJson("Screenshot timed out", "TIMEOUT");
-        if (errorRef.get() != null) return errorJson(errorRef.get(), "SCREENSHOT_FAILED");
+        if (!done) throw new IllegalStateException("Screenshot timed out");
+        if (errorRef.get() != null) throw new IllegalStateException(errorRef.get());
 
-        JSONObject result = new JSONObject();
-        result.put("ok", true);
-        result.put("image", imageRef.get());
-        result.put("width", widthRef.get());
-        result.put("height", heightRef.get());
-        return result.toString();
+        Bitmap bmp = bitmapRef.get();
+        if (bmp == null) throw new IllegalStateException("Screenshot bitmap unavailable");
+        return bmp;
+    }
+
+    private Bitmap decodeBase64Bitmap(String imageBase64) throws Exception {
+        String raw = imageBase64;
+        int comma = raw.indexOf(",");
+        if (raw.startsWith("data:image") && comma > 0) {
+            raw = raw.substring(comma + 1);
+        }
+        byte[] bytes = Base64.decode(raw, Base64.DEFAULT);
+        Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        if (bmp == null) throw new IllegalStateException("Decode imageBase64 failed");
+        return bmp;
+    }
+
+    private Rect parseCropRect(JSONObject region, int imageWidth, int imageHeight) {
+        int left;
+        int top;
+        int right;
+        int bottom;
+
+        if (region.has("left") || region.has("top") || region.has("right") || region.has("bottom")) {
+            left = clamp(region.optInt("left", 0), 0, imageWidth - 1);
+            top = clamp(region.optInt("top", 0), 0, imageHeight - 1);
+            right = clamp(region.optInt("right", imageWidth), left + 1, imageWidth);
+            bottom = clamp(region.optInt("bottom", imageHeight), top + 1, imageHeight);
+        } else {
+            int x = clamp(region.optInt("x", 0), 0, imageWidth - 1);
+            int y = clamp(region.optInt("y", 0), 0, imageHeight - 1);
+            int w = region.optInt("width", imageWidth - x);
+            int h = region.optInt("height", imageHeight - y);
+            if (w <= 0 || h <= 0) return null;
+            left = x;
+            top = y;
+            right = clamp(x + w, x + 1, imageWidth);
+            bottom = clamp(y + h, y + 1, imageHeight);
+        }
+
+        if (right <= left || bottom <= top) return null;
+        return new Rect(left, top, right, bottom);
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private List<OcrLineData> runOcr(Bitmap bitmap) throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<List<OcrLineData>> outRef = new AtomicReference<>(new ArrayList<>());
+        AtomicReference<String> errorRef = new AtomicReference<>(null);
+
+        InputImage image = InputImage.fromBitmap(bitmap, 0);
+        com.google.mlkit.vision.text.TextRecognizer recognizer =
+                TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
+
+        recognizer.process(image)
+                .addOnSuccessListener(result -> {
+                    try {
+                        List<OcrLineData> out = new ArrayList<>();
+                        for (Text.TextBlock block : result.getTextBlocks()) {
+                            List<Text.Line> lines = block.getLines();
+                            if (lines != null && !lines.isEmpty()) {
+                                for (Text.Line line : lines) {
+                                    Rect b = line.getBoundingBox();
+                                    String t = line.getText();
+                                    if (b == null || t == null || t.isEmpty()) continue;
+                                    out.add(new OcrLineData(t, b));
+                                }
+                            } else {
+                                Rect b = block.getBoundingBox();
+                                String t = block.getText();
+                                if (b != null && t != null && !t.isEmpty()) {
+                                    out.add(new OcrLineData(t, b));
+                                }
+                            }
+                        }
+                        outRef.set(out);
+                    } catch (Exception e) {
+                        errorRef.set("OCR result parse failed: " + e.getMessage());
+                    } finally {
+                        latch.countDown();
+                    }
+                })
+                .addOnFailureListener(e -> {
+                    errorRef.set("OCR failed: " + e.getMessage());
+                    latch.countDown();
+                });
+
+        boolean done = latch.await(12, TimeUnit.SECONDS);
+        recognizer.close();
+        if (!done) throw new IllegalStateException("OCR timed out");
+        if (errorRef.get() != null) throw new IllegalStateException(errorRef.get());
+        return outRef.get();
+    }
+
+    private JSONObject lineToJson(OcrLineData line, int offsetX, int offsetY) throws Exception {
+        Rect b = line.bounds;
+        int left = b.left + offsetX;
+        int top = b.top + offsetY;
+        int right = b.right + offsetX;
+        int bottom = b.bottom + offsetY;
+
+        JSONObject item = new JSONObject();
+        item.put("text", line.text);
+        item.put("left", left);
+        item.put("top", top);
+        item.put("right", right);
+        item.put("bottom", bottom);
+        item.put("bounds", "[" + left + "," + top + "][" + right + "," + bottom + "]");
+        item.put("centerX", (left + right) / 2);
+        item.put("centerY", (top + bottom) / 2);
+        return item;
+    }
+
+    private boolean dispatchTapPoint(int x, int y, long duration) {
+        try {
+            Path path = new Path();
+            path.moveTo(x, y);
+            GestureDescription.Builder builder = new GestureDescription.Builder();
+            builder.addStroke(new GestureDescription.StrokeDescription(path, 0, duration));
+            return dispatchGesture(builder.build(), null, null);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     // ===== /clipboard — Read/write clipboard (v2.1) =====
