@@ -81,6 +81,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * </pre>
  */
 public class OrbScriptEngine {
+    static final String VERSION = "2.7";
     private static final String TAG = "OrbEye.JS";
     private final OrbAccessibilityService svc;
     // Track active script threads by execution id so /stopjs can target one script.
@@ -442,6 +443,7 @@ public class OrbScriptEngine {
     }
 
     private static final String PREAMBLE =
+        "var ORB_EYE_VERSION = '" + VERSION + "';\n" +
         // Reading
         "function getScreen() { return JSON.parse(_orb.getScreen()); }\n" +
         "function getInfo() { return JSON.parse(_orb.getInfo()); }\n" +
@@ -456,6 +458,7 @@ public class OrbScriptEngine {
         "function openPackage(pkg) { return _orb.openPackage(String(pkg || '')); }\n" +
         "function openActivity(pkg, cls) { return _orb.openActivity(String(pkg || ''), String(cls || '')); }\n" +
         "function openUrl(url) { return _orb.openUrl(String(url || '')); }\n" +
+        "function shell(cmd) { return _orb.shell(String(cmd || '')); }\n" +
         "function input(t) { _orb.input(t); }\n" +
         "function setText(t) { _orb.setText(t); }\n" +
         "function paste() { return _orb.paste(); }\n" +
@@ -679,6 +682,28 @@ public class OrbScriptEngine {
             } catch (Exception e) {
                 Log.e(TAG, "openUrl error: " + e.getMessage());
                 return false;
+            }
+        }
+
+        /**
+         * Execute a shell command via Runtime.exec(), equivalent to adb shell.
+         * Returns the command's stdout, or empty string on error.
+         */
+        public String shell(String cmd) {
+            try {
+                String c = cmd != null ? cmd.trim() : "";
+                if (c.isEmpty()) return "";
+                Process proc = Runtime.getRuntime().exec(new String[]{"sh", "-c", c});
+                java.io.InputStream is = proc.getInputStream();
+                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                byte[] tmp = new byte[1024];
+                int n;
+                while ((n = is.read(tmp)) != -1) buf.write(tmp, 0, n);
+                proc.waitFor();
+                return buf.toString("UTF-8").trim();
+            } catch (Exception e) {
+                Log.e(TAG, "shell error: " + e.getMessage());
+                return "";
             }
         }
 

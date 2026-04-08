@@ -51,6 +51,7 @@ Read the full story: [Orb 的五感觉醒](https://x.com/karry_viber)
 | POST | `/swipe` | Swipe gesture |
 | POST | `/longpress` | Long press at coordinates |
 | POST | `/gesture` | **v2.1** Composite gestures (pinch, multi-stroke) |
+| POST | `/stopjs` | **v2.4** Interrupt running `/exec` JavaScript scripts |
 | POST | `/back` | Press back button |
 | POST | `/home` | Press home button |
 | POST | `/recents` | Open recent apps |
@@ -60,6 +61,8 @@ Read the full story: [Orb 的五感觉醒](https://x.com/karry_viber)
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/screenshot` | **v2.1** Screenshot as base64 PNG (no root needed) |
+| GET/POST | `/ocr` | **v2.2** OCR from screenshot or provided base64 image, optional text match + tap |
+| GET/POST | `/ocr-screen` | **v2.2** Alias of `/ocr` (explicit current-screen OCR) |
 | GET | `/notify` | Buffered notifications with package filtering |
 | GET | `/wait` | Block until UI changes (timeout param) |
 | GET/POST | `/clipboard` | **v2.1** Read/write system clipboard |
@@ -69,7 +72,7 @@ Read the full story: [Orb 的五感觉醒](https://x.com/karry_viber)
 ```bash
 # Health check
 curl http://localhost:7333/ping
-# → {"ok":true,"service":"orb-eye","version":"2.1"}
+# → {"ok":true,"service":"orb-eye","version":"2.2"}
 
 # Get all screen elements (now with center coordinates!)
 curl http://localhost:7333/screen
@@ -105,6 +108,27 @@ curl -X POST http://localhost:7333/input \
 curl http://localhost:7333/screenshot
 # → {"ok":true,"image":"data:image/png;base64,...","width":1080,"height":2400}
 
+# OCR current screen and find target text
+curl -X POST http://localhost:7333/ocr \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"找朋友帮忙付","contains":true}'
+# → {"ok":true,"matchCount":1,"matches":[{"text":"找朋友帮忙付","centerX":...,"centerY":...}],...}
+
+# Same behavior via alias
+curl -X POST http://localhost:7333/ocr-screen \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"找朋友帮忙付","contains":true}'
+
+# OCR + tap matched text (index 0)
+curl -X POST http://localhost:7333/ocr \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"找朋友帮忙付","tap":true,"index":0}'
+
+# OCR only in region (crop)
+curl -X POST http://localhost:7333/ocr \
+  -H 'Content-Type: application/json' \
+  -d '{"region":{"x":0,"y":1400,"width":1080,"height":900}}'
+
 # Read/write clipboard
 curl http://localhost:7333/clipboard
 curl -X POST http://localhost:7333/clipboard \
@@ -126,6 +150,10 @@ curl 'http://localhost:7333/notify?exclude=com.android.systemui,com.google.andro
 
 # Wait for UI change (5 second timeout)
 curl 'http://localhost:7333/wait?timeout=5000'
+
+# Stop currently running /exec script(s)
+curl -X POST http://localhost:7333/stopjs
+# → {"ok":true,"stopped":1}
 
 # Filter screen elements
 curl 'http://localhost:7333/screen?editable=true'
@@ -149,12 +177,13 @@ All endpoints return unified error format with machine-readable codes:
 | `INVALID_ARGS` | Missing or invalid request parameters |
 | `NOT_SUPPORTED` | Feature requires higher API level |
 | `SCREENSHOT_FAILED` | Screenshot capture failed |
+| `OCR_FAILED` | OCR inference failed |
 | `INTERNAL_ERROR` | Unexpected exception |
 
 ## Install
 
-1. Download `orb-eye-v2.1.apk` from [Releases](https://github.com/KarryViber/orb-eye/releases)
-2. Install: `adb install orb-eye-v2.1.apk`
+1. Download `orb-eye-v2.2.apk` from [Releases](https://github.com/KarryViber/orb-eye/releases)
+2. Install: `adb install orb-eye-v2.2.apk`
 3. Enable Accessibility Service: Settings → Accessibility → Orb Eye → On
 4. Verify: `curl http://localhost:7333/ping` → `{"ok":true,"version":"2.1"}`
 
@@ -163,7 +192,7 @@ All endpoints return unified error format with machine-readable codes:
 ```bash
 # Requires Android SDK
 ./gradlew assembleDebug
-# APK at app/build/outputs/apk/debug/orb-eye-v2.1.apk
+# APK at app/build/outputs/apk/debug/orb-eye-v2.2.apk
 ```
 
 ## Architecture

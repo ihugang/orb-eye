@@ -9,6 +9,7 @@
 
     <application
         android:allowBackup="false"
+        android:extractNativeLibs="false"
         android:label="Orb Eye"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault">

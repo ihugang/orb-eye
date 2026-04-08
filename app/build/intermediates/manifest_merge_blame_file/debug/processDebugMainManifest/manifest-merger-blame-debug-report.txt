@@ -1,0 +1,199 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.orb.eye"
+4    android:versionCode="7"
+5    android:versionName="2.6" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="26"
+9        android:targetSdkVersion="35" />
+10
+11    <uses-permission android:name="android.permission.INTERNET" />
+11-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:5:5-67
+11-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:5:22-64
+12    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+12-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:6:5-78
+12-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:6:22-75
+13    <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" />
+13-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:7:5-93
+13-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:7:22-90
+14
+15    <permission
+15-->[androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:22:5-24:47
+16        android:name="com.orb.eye.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+16-->[androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:23:9-81
+17        android:protectionLevel="signature" />
+17-->[androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:24:9-44
+18
+19    <uses-permission android:name="com.orb.eye.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" /> <!-- Although the *SdkVersion is captured in gradle build files, this is required for non gradle builds -->
+19-->[androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:26:5-97
+19-->[androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:26:22-94
+20    <!-- <uses-sdk android:minSdkVersion="14"/> -->
+21    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" /> <!-- Clipboard access via ClipboardManager is granted to accessibility services without extra permission -->
+21-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:25:5-79
+21-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:25:22-76
+22    <application
+22-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:10:5-38:19
+23        android:allowBackup="false"
+23-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:11:9-36
+24        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+24-->[androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:28:18-86
+25        android:debuggable="true"
+26        android:extractNativeLibs="false"
+26-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:12:9-42
+27        android:label="Orb Eye"
+27-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:13:9-32
+28        android:supportsRtl="true"
+28-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:14:9-35
+29        android:theme="@android:style/Theme.DeviceDefault" >
+29-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:15:9-59
+30        <service
+30-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:17:9-27:19
+31            android:name="com.orb.eye.OrbAccessibilityService"
+31-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:18:13-52
+32            android:exported="true"
+32-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:20:13-36
+33            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" >
+33-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:19:13-79
+34            <intent-filter>
+34-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:21:13-23:29
+35                <action android:name="android.accessibilityservice.AccessibilityService" />
+35-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:22:17-92
+35-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:22:25-89
+36            </intent-filter>
+37
+38            <meta-data
+38-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:24:13-26:64
+39                android:name="android.accessibilityservice"
+39-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:25:17-60
+40                android:resource="@xml/accessibility_config" />
+40-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:26:17-61
+41        </service>
+42
+43        <activity
+43-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:29:9-36:20
+44            android:name="com.orb.eye.MainActivity"
+44-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:30:13-41
+45            android:exported="true" >
+45-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:31:13-36
+46            <intent-filter>
+46-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:32:13-35:29
+47                <action android:name="android.intent.action.MAIN" />
+47-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:33:17-69
+47-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:33:25-66
+48
+49                <category android:name="android.intent.category.LAUNCHER" />
+49-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:34:17-77
+49-->/Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:34:27-74
+50            </intent-filter>
+51        </activity>
+52
+53        <service
+53-->[com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:9:9-15:19
+54            android:name="com.google.mlkit.common.internal.MlKitComponentDiscoveryService"
+54-->[com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:10:13-91
+55            android:directBootAware="true"
+55-->[com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:17:13-43
+56            android:exported="false" >
+56-->[com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:11:13-37
+57            <meta-data
+57-->[com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:12:13-14:85
+58                android:name="com.google.firebase.components:com.google.mlkit.vision.text.internal.TextRegistrar"
+58-->[com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:13:17-114
+59                android:value="com.google.firebase.components.ComponentRegistrar" />
+59-->[com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:14:17-82
+60            <meta-data
+60-->[com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:12:13-14:85
+61                android:name="com.google.firebase.components:com.google.mlkit.vision.common.internal.VisionCommonRegistrar"
+61-->[com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:13:17-124
+62                android:value="com.google.firebase.components.ComponentRegistrar" />
+62-->[com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:14:17-82
+63            <meta-data
+63-->[com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:20:13-22:85
+64                android:name="com.google.firebase.components:com.google.mlkit.common.internal.CommonComponentRegistrar"
+64-->[com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:21:17-120
+65                android:value="com.google.firebase.components.ComponentRegistrar" />
+65-->[com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:22:17-82
+66        </service>
+67
+68        <provider
+68-->[com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:9:9-13:38
+69            android:name="com.google.mlkit.common.internal.MlKitInitProvider"
+69-->[com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:10:13-78
+70            android:authorities="com.orb.eye.mlkitinitprovider"
+70-->[com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:11:13-69
+71            android:exported="false"
+71-->[com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:12:13-37
+72            android:initOrder="99" />
+72-->[com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:13:13-35
+73
+74        <activity
+74-->[com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:5:9-173
+75            android:name="com.google.android.gms.common.api.GoogleApiActivity"
+75-->[com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:5:19-85
+76            android:exported="false"
+76-->[com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:5:146-170
+77            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+77-->[com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:5:86-145
+78
+79        <meta-data
+79-->[com.google.android.gms:play-services-basement:18.4.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0404c6b996535772d00269f0c59d6869/transformed/play-services-basement-18.4.0/AndroidManifest.xml:6:9-122
+80            android:name="com.google.android.gms.version"
+80-->[com.google.android.gms:play-services-basement:18.4.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0404c6b996535772d00269f0c59d6869/transformed/play-services-basement-18.4.0/AndroidManifest.xml:6:20-65
+81            android:value="@integer/google_play_services_version" />
+81-->[com.google.android.gms:play-services-basement:18.4.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0404c6b996535772d00269f0c59d6869/transformed/play-services-basement-18.4.0/AndroidManifest.xml:6:66-119
+82
+83        <provider
+83-->[androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:24:9-32:20
+84            android:name="androidx.startup.InitializationProvider"
+84-->[androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:25:13-67
+85            android:authorities="com.orb.eye.androidx-startup"
+85-->[androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:26:13-68
+86            android:exported="false" >
+86-->[androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:27:13-37
+87            <meta-data
+87-->[androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:29:13-31:52
+88                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+88-->[androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:30:17-75
+89                android:value="androidx.startup" />
+89-->[androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:31:17-49
+90            <meta-data
+90-->[androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:31:13-33:52
+91                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+91-->[androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:32:17-78
+92                android:value="androidx.startup" />
+92-->[androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:33:17-49
+93        </provider>
+94
+95        <service
+95-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:29:9-35:19
+96            android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
+96-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:30:13-103
+97            android:exported="false" >
+97-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:31:13-37
+98            <meta-data
+98-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:32:13-34:39
+99                android:name="backend:com.google.android.datatransport.cct.CctBackendFactory"
+99-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:33:17-94
+100                android:value="cct" />
+100-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:34:17-36
+101        </service>
+102        <service
+102-->[com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:26:9-30:19
+103            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService"
+103-->[com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:27:13-117
+104            android:exported="false"
+104-->[com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:28:13-37
+105            android:permission="android.permission.BIND_JOB_SERVICE" >
+105-->[com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:29:13-69
+106        </service>
+107
+108        <receiver
+108-->[com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:32:9-34:40
+109            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver"
+109-->[com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:33:13-132
+110            android:exported="false" />
+110-->[com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:34:13-37
+111    </application>
+112
+113</manifest>

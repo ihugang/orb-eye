@@ -1,0 +1,386 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:2:1-39:12
+INJECTED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:2:1-39:12
+INJECTED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:2:1-39:12
+INJECTED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:2:1-39:12
+MERGED from [com.google.mlkit:text-recognition-chinese:16.0.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/8e0e382945b1ba8e14a9d8fd1b54ecc4/transformed/text-recognition-chinese-16.0.1/AndroidManifest.xml:2:1-7:12
+MERGED from [com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3c144fb2f727ec25760396e69b3baf1d/transformed/play-services-mlkit-text-recognition-chinese-16.0.1/AndroidManifest.xml:2:1-8:12
+MERGED from [com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:2:1-18:12
+MERGED from [com.google.mlkit:text-recognition-bundled-common:17.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/eeeb31ba17508ed4866f4db04209be42/transformed/text-recognition-bundled-common-17.0.0/AndroidManifest.xml:2:1-7:12
+MERGED from [com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:2:1-18:12
+MERGED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:2:1-26:12
+MERGED from [com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:2:1-7:12
+MERGED from [com.google.mlkit:vision-interfaces:16.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/4473863b6945ae935468378ed7eed498/transformed/vision-interfaces-16.3.0/AndroidManifest.xml:2:1-7:12
+MERGED from [com.google.android.gms:play-services-tasks:18.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/9703741062dc2c8c4f5b29c745e07eea/transformed/play-services-tasks-18.2.0/AndroidManifest.xml:2:1-5:12
+MERGED from [com.google.android.gms:play-services-basement:18.4.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0404c6b996535772d00269f0c59d6869/transformed/play-services-basement-18.4.0/AndroidManifest.xml:2:1-9:12
+MERGED from [androidx.appcompat:appcompat-resources:1.6.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/541fc6b622c2f2c36a2e2ea43ab43c62/transformed/appcompat-resources-1.6.1/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.appcompat:appcompat:1.6.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/7023c767f4abd58f829786c8bb1011f6/transformed/appcompat-1.6.1/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.fragment:fragment:1.3.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0ac99da60d92e1eb52123eddc41434a4/transformed/fragment-1.3.6/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.activity:activity:1.6.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0cb241117b494da29c2310ccc4614bed/transformed/activity-1.6.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.drawerlayout:drawerlayout:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/d914960b471e827ce4b0100a79d3a249/transformed/drawerlayout-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.emoji2:emoji2-views-helper:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/4c6f885911f23fa42725042639927ac6/transformed/emoji2-views-helper-1.2.0/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:17:1-35:12
+MERGED from [androidx.loader:loader:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/7da6015f2e315352778965a01ea370c5/transformed/loader-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.lifecycle:lifecycle-viewmodel:2.5.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0bd5adad58d79b8cbfcfc3acd9f39848/transformed/lifecycle-viewmodel-2.5.1/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.lifecycle:lifecycle-viewmodel-savedstate:2.5.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a21c004064b8f48164496add8804ac5e/transformed/lifecycle-viewmodel-savedstate-2.5.1/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.core:core-ktx:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14a5ac4c688f983aa9ad97be20c908b/transformed/core-ktx-1.9.0/AndroidManifest.xml:2:1-7:12
+MERGED from [androidx.viewpager:viewpager:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/82b716bb04b409ae7f45c8341828be72/transformed/viewpager-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.vectordrawable:vectordrawable-animated:1.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/6cb4f1a4e2d7a49d63eacf3263be1b6d/transformed/vectordrawable-animated-1.1.0/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.vectordrawable:vectordrawable:1.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/ed554cf0b5c4e377b6d739ff2bd04a2c/transformed/vectordrawable-1.1.0/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.customview:customview:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/1a52f6c07cba32f7511408fc5dfbe681/transformed/customview-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:17:1-30:12
+MERGED from [androidx.versionedparcelable:versionedparcelable:1.1.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/8283203b80fa64dcee6eceaa080698e2/transformed/versionedparcelable-1.1.1/AndroidManifest.xml:17:1-27:12
+MERGED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:15:1-38:12
+MERGED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:15:1-41:12
+MERGED from [com.google.android.datatransport:transport-api:2.2.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/e053f216af9ca7a6c04922bb39a06de8/transformed/transport-api-2.2.1/AndroidManifest.xml:15:1-22:12
+MERGED from [com.google.android.odml:image:1.0.0-beta1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/951a5250da6ba3a0609bc35c148393da/transformed/image-1.0.0-beta1/AndroidManifest.xml:2:1-9:12
+MERGED from [com.google.firebase:firebase-components:16.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/99b57cb7bf03b40c5b6c8a7f6fa37716/transformed/firebase-components-16.1.0/AndroidManifest.xml:15:1-23:12
+MERGED from [com.google.firebase:firebase-encoders-json:17.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/fa8dba6b754be2a46c6ff909dd7f0ae7/transformed/firebase-encoders-json-17.1.0/AndroidManifest.xml:15:1-23:12
+MERGED from [androidx.exifinterface:exifinterface:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/8de5c037347e40d41851f58e00da8061/transformed/exifinterface-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.cursoradapter:cursoradapter:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a48ef1d7d65f226196a4e1d49211fa86/transformed/cursoradapter-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:17:1-37:12
+MERGED from [androidx.lifecycle:lifecycle-runtime:2.5.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/58321e516ad34c85f50214bfc37012b0/transformed/lifecycle-runtime-2.5.1/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.savedstate:savedstate:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3174df0ff980f6e975b51920009d4486/transformed/savedstate-1.2.0/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/49c1c050b356e29dcf341dbf30a76580/transformed/startup-runtime-1.1.1/AndroidManifest.xml:17:1-33:12
+MERGED from [androidx.tracing:tracing:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/cb7b94425f5063943c0a3a51f848638c/transformed/tracing-1.0.0/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.lifecycle:lifecycle-livedata:2.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a5ef9b2936f301ebd59f3ca57751947e/transformed/lifecycle-livedata-2.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.lifecycle:lifecycle-livedata-core:2.5.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/217c83ced2ef8bad151c34f69145de26/transformed/lifecycle-livedata-core-2.5.1/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.arch.core:core-runtime:2.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/ebaa3bb6eb2a505380f2287fc2631e28/transformed/core-runtime-2.1.0/AndroidManifest.xml:17:1-24:12
+MERGED from [androidx.interpolator:interpolator:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/d858d6b81468ab4ca87de4d07abebd23/transformed/interpolator-1.0.0/AndroidManifest.xml:17:1-22:12
+MERGED from [androidx.annotation:annotation-experimental:1.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a546fe95764cac7f3528cb2abf9940ac/transformed/annotation-experimental-1.3.0/AndroidManifest.xml:17:1-22:12
+	package
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:3:5-26
+		INJECTED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml
+	android:versionName
+		INJECTED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml
+	android:versionCode
+		INJECTED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:2:11-69
+uses-permission#android.permission.INTERNET
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:5:5-67
+MERGED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:26:5-67
+MERGED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:26:5-67
+	android:name
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:5:22-64
+uses-permission#android.permission.SYSTEM_ALERT_WINDOW
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:6:5-78
+	android:name
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:6:22-75
+uses-permission#android.permission.BIND_NOTIFICATION_LISTENER_SERVICE
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:7:5-93
+	android:name
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:7:22-90
+application
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:10:5-38:19
+MERGED from [com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:8:5-16:19
+MERGED from [com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:8:5-16:19
+MERGED from [com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:8:5-16:19
+MERGED from [com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:8:5-16:19
+MERGED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:8:5-24:19
+MERGED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:8:5-24:19
+MERGED from [com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:4:5-6:19
+MERGED from [com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:4:5-6:19
+MERGED from [com.google.android.gms:play-services-tasks:18.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/9703741062dc2c8c4f5b29c745e07eea/transformed/play-services-tasks-18.2.0/AndroidManifest.xml:4:5-20
+MERGED from [com.google.android.gms:play-services-tasks:18.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/9703741062dc2c8c4f5b29c745e07eea/transformed/play-services-tasks-18.2.0/AndroidManifest.xml:4:5-20
+MERGED from [com.google.android.gms:play-services-basement:18.4.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0404c6b996535772d00269f0c59d6869/transformed/play-services-basement-18.4.0/AndroidManifest.xml:5:5-7:19
+MERGED from [com.google.android.gms:play-services-basement:18.4.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0404c6b996535772d00269f0c59d6869/transformed/play-services-basement-18.4.0/AndroidManifest.xml:5:5-7:19
+MERGED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:23:5-33:19
+MERGED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:23:5-33:19
+MERGED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:28:5-89
+MERGED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:28:5-89
+MERGED from [androidx.versionedparcelable:versionedparcelable:1.1.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/8283203b80fa64dcee6eceaa080698e2/transformed/versionedparcelable-1.1.1/AndroidManifest.xml:24:5-25:19
+MERGED from [androidx.versionedparcelable:versionedparcelable:1.1.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/8283203b80fa64dcee6eceaa080698e2/transformed/versionedparcelable-1.1.1/AndroidManifest.xml:24:5-25:19
+MERGED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:28:5-36:19
+MERGED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:28:5-36:19
+MERGED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:25:5-39:19
+MERGED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:25:5-39:19
+MERGED from [com.google.android.odml:image:1.0.0-beta1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/951a5250da6ba3a0609bc35c148393da/transformed/image-1.0.0-beta1/AndroidManifest.xml:7:5-20
+MERGED from [com.google.android.odml:image:1.0.0-beta1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/951a5250da6ba3a0609bc35c148393da/transformed/image-1.0.0-beta1/AndroidManifest.xml:7:5-20
+MERGED from [androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:25:5-35:19
+MERGED from [androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:25:5-35:19
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/49c1c050b356e29dcf341dbf30a76580/transformed/startup-runtime-1.1.1/AndroidManifest.xml:25:5-31:19
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/49c1c050b356e29dcf341dbf30a76580/transformed/startup-runtime-1.1.1/AndroidManifest.xml:25:5-31:19
+	android:extractNativeLibs
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:12:9-42
+	android:appComponentFactory
+		ADDED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:28:18-86
+	android:supportsRtl
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:14:9-35
+	android:label
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:13:9-32
+	android:allowBackup
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:11:9-36
+	android:theme
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:15:9-59
+service#com.orb.eye.OrbAccessibilityService
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:17:9-27:19
+	android:exported
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:20:13-36
+	android:permission
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:19:13-79
+	android:name
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:18:13-52
+intent-filter#action:name:android.accessibilityservice.AccessibilityService
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:21:13-23:29
+action#android.accessibilityservice.AccessibilityService
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:22:17-92
+	android:name
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:22:25-89
+meta-data#android.accessibilityservice
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:24:13-26:64
+	android:resource
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:26:17-61
+	android:name
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:25:17-60
+activity#com.orb.eye.MainActivity
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:29:9-36:20
+	android:exported
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:31:13-36
+	android:name
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:30:13-41
+intent-filter#action:name:android.intent.action.MAIN+category:name:android.intent.category.LAUNCHER
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:32:13-35:29
+action#android.intent.action.MAIN
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:33:17-69
+	android:name
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:33:25-66
+category#android.intent.category.LAUNCHER
+ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:34:17-77
+	android:name
+		ADDED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml:34:27-74
+uses-sdk
+INJECTED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml
+INJECTED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml
+MERGED from [com.google.mlkit:text-recognition-chinese:16.0.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/8e0e382945b1ba8e14a9d8fd1b54ecc4/transformed/text-recognition-chinese-16.0.1/AndroidManifest.xml:5:5-44
+MERGED from [com.google.mlkit:text-recognition-chinese:16.0.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/8e0e382945b1ba8e14a9d8fd1b54ecc4/transformed/text-recognition-chinese-16.0.1/AndroidManifest.xml:5:5-44
+MERGED from [com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3c144fb2f727ec25760396e69b3baf1d/transformed/play-services-mlkit-text-recognition-chinese-16.0.1/AndroidManifest.xml:6:5-44
+MERGED from [com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3c144fb2f727ec25760396e69b3baf1d/transformed/play-services-mlkit-text-recognition-chinese-16.0.1/AndroidManifest.xml:6:5-44
+MERGED from [com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:6:5-44
+MERGED from [com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:6:5-44
+MERGED from [com.google.mlkit:text-recognition-bundled-common:17.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/eeeb31ba17508ed4866f4db04209be42/transformed/text-recognition-bundled-common-17.0.0/AndroidManifest.xml:5:5-44
+MERGED from [com.google.mlkit:text-recognition-bundled-common:17.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/eeeb31ba17508ed4866f4db04209be42/transformed/text-recognition-bundled-common-17.0.0/AndroidManifest.xml:5:5-44
+MERGED from [com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:6:5-44
+MERGED from [com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:6:5-44
+MERGED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:6:5-44
+MERGED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:6:5-44
+MERGED from [com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:3:5-44
+MERGED from [com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:3:5-44
+MERGED from [com.google.mlkit:vision-interfaces:16.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/4473863b6945ae935468378ed7eed498/transformed/vision-interfaces-16.3.0/AndroidManifest.xml:5:5-44
+MERGED from [com.google.mlkit:vision-interfaces:16.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/4473863b6945ae935468378ed7eed498/transformed/vision-interfaces-16.3.0/AndroidManifest.xml:5:5-44
+MERGED from [com.google.android.gms:play-services-tasks:18.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/9703741062dc2c8c4f5b29c745e07eea/transformed/play-services-tasks-18.2.0/AndroidManifest.xml:3:5-44
+MERGED from [com.google.android.gms:play-services-tasks:18.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/9703741062dc2c8c4f5b29c745e07eea/transformed/play-services-tasks-18.2.0/AndroidManifest.xml:3:5-44
+MERGED from [com.google.android.gms:play-services-basement:18.4.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0404c6b996535772d00269f0c59d6869/transformed/play-services-basement-18.4.0/AndroidManifest.xml:3:5-44
+MERGED from [com.google.android.gms:play-services-basement:18.4.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0404c6b996535772d00269f0c59d6869/transformed/play-services-basement-18.4.0/AndroidManifest.xml:3:5-44
+MERGED from [androidx.appcompat:appcompat-resources:1.6.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/541fc6b622c2f2c36a2e2ea43ab43c62/transformed/appcompat-resources-1.6.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.appcompat:appcompat-resources:1.6.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/541fc6b622c2f2c36a2e2ea43ab43c62/transformed/appcompat-resources-1.6.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.appcompat:appcompat:1.6.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/7023c767f4abd58f829786c8bb1011f6/transformed/appcompat-1.6.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.appcompat:appcompat:1.6.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/7023c767f4abd58f829786c8bb1011f6/transformed/appcompat-1.6.1/AndroidManifest.xml:20:5-44
+MERGED from [androidx.fragment:fragment:1.3.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0ac99da60d92e1eb52123eddc41434a4/transformed/fragment-1.3.6/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.fragment:fragment:1.3.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0ac99da60d92e1eb52123eddc41434a4/transformed/fragment-1.3.6/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.activity:activity:1.6.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0cb241117b494da29c2310ccc4614bed/transformed/activity-1.6.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.activity:activity:1.6.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0cb241117b494da29c2310ccc4614bed/transformed/activity-1.6.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.drawerlayout:drawerlayout:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/d914960b471e827ce4b0100a79d3a249/transformed/drawerlayout-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.drawerlayout:drawerlayout:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/d914960b471e827ce4b0100a79d3a249/transformed/drawerlayout-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.emoji2:emoji2-views-helper:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/4c6f885911f23fa42725042639927ac6/transformed/emoji2-views-helper-1.2.0/AndroidManifest.xml:5:5-44
+MERGED from [androidx.emoji2:emoji2-views-helper:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/4c6f885911f23fa42725042639927ac6/transformed/emoji2-views-helper-1.2.0/AndroidManifest.xml:5:5-44
+MERGED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:21:5-44
+MERGED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:21:5-44
+MERGED from [androidx.loader:loader:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/7da6015f2e315352778965a01ea370c5/transformed/loader-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.loader:loader:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/7da6015f2e315352778965a01ea370c5/transformed/loader-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-viewmodel:2.5.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0bd5adad58d79b8cbfcfc3acd9f39848/transformed/lifecycle-viewmodel-2.5.1/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.lifecycle:lifecycle-viewmodel:2.5.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0bd5adad58d79b8cbfcfc3acd9f39848/transformed/lifecycle-viewmodel-2.5.1/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.lifecycle:lifecycle-viewmodel-savedstate:2.5.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a21c004064b8f48164496add8804ac5e/transformed/lifecycle-viewmodel-savedstate-2.5.1/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.lifecycle:lifecycle-viewmodel-savedstate:2.5.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a21c004064b8f48164496add8804ac5e/transformed/lifecycle-viewmodel-savedstate-2.5.1/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.core:core-ktx:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14a5ac4c688f983aa9ad97be20c908b/transformed/core-ktx-1.9.0/AndroidManifest.xml:5:5-44
+MERGED from [androidx.core:core-ktx:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14a5ac4c688f983aa9ad97be20c908b/transformed/core-ktx-1.9.0/AndroidManifest.xml:5:5-44
+MERGED from [androidx.viewpager:viewpager:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/82b716bb04b409ae7f45c8341828be72/transformed/viewpager-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.viewpager:viewpager:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/82b716bb04b409ae7f45c8341828be72/transformed/viewpager-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.vectordrawable:vectordrawable-animated:1.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/6cb4f1a4e2d7a49d63eacf3263be1b6d/transformed/vectordrawable-animated-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.vectordrawable:vectordrawable-animated:1.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/6cb4f1a4e2d7a49d63eacf3263be1b6d/transformed/vectordrawable-animated-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.vectordrawable:vectordrawable:1.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/ed554cf0b5c4e377b6d739ff2bd04a2c/transformed/vectordrawable-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.vectordrawable:vectordrawable:1.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/ed554cf0b5c4e377b6d739ff2bd04a2c/transformed/vectordrawable-1.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.customview:customview:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/1a52f6c07cba32f7511408fc5dfbe681/transformed/customview-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.customview:customview:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/1a52f6c07cba32f7511408fc5dfbe681/transformed/customview-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.versionedparcelable:versionedparcelable:1.1.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/8283203b80fa64dcee6eceaa080698e2/transformed/versionedparcelable-1.1.1/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.versionedparcelable:versionedparcelable:1.1.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/8283203b80fa64dcee6eceaa080698e2/transformed/versionedparcelable-1.1.1/AndroidManifest.xml:20:5-22:41
+MERGED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:19:5-21:41
+MERGED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:19:5-21:41
+MERGED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:18:5-20:41
+MERGED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:18:5-20:41
+MERGED from [com.google.android.datatransport:transport-api:2.2.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/e053f216af9ca7a6c04922bb39a06de8/transformed/transport-api-2.2.1/AndroidManifest.xml:18:5-20:41
+MERGED from [com.google.android.datatransport:transport-api:2.2.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/e053f216af9ca7a6c04922bb39a06de8/transformed/transport-api-2.2.1/AndroidManifest.xml:18:5-20:41
+MERGED from [com.google.android.odml:image:1.0.0-beta1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/951a5250da6ba3a0609bc35c148393da/transformed/image-1.0.0-beta1/AndroidManifest.xml:5:5-44
+MERGED from [com.google.android.odml:image:1.0.0-beta1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/951a5250da6ba3a0609bc35c148393da/transformed/image-1.0.0-beta1/AndroidManifest.xml:5:5-44
+MERGED from [com.google.firebase:firebase-components:16.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/99b57cb7bf03b40c5b6c8a7f6fa37716/transformed/firebase-components-16.1.0/AndroidManifest.xml:19:5-21:41
+MERGED from [com.google.firebase:firebase-components:16.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/99b57cb7bf03b40c5b6c8a7f6fa37716/transformed/firebase-components-16.1.0/AndroidManifest.xml:19:5-21:41
+MERGED from [com.google.firebase:firebase-encoders-json:17.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/fa8dba6b754be2a46c6ff909dd7f0ae7/transformed/firebase-encoders-json-17.1.0/AndroidManifest.xml:19:5-21:41
+MERGED from [com.google.firebase:firebase-encoders-json:17.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/fa8dba6b754be2a46c6ff909dd7f0ae7/transformed/firebase-encoders-json-17.1.0/AndroidManifest.xml:19:5-21:41
+MERGED from [androidx.exifinterface:exifinterface:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/8de5c037347e40d41851f58e00da8061/transformed/exifinterface-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.exifinterface:exifinterface:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/8de5c037347e40d41851f58e00da8061/transformed/exifinterface-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.cursoradapter:cursoradapter:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a48ef1d7d65f226196a4e1d49211fa86/transformed/cursoradapter-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.cursoradapter:cursoradapter:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a48ef1d7d65f226196a4e1d49211fa86/transformed/cursoradapter-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:21:5-23:41
+MERGED from [androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:21:5-23:41
+MERGED from [androidx.lifecycle:lifecycle-runtime:2.5.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/58321e516ad34c85f50214bfc37012b0/transformed/lifecycle-runtime-2.5.1/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.lifecycle:lifecycle-runtime:2.5.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/58321e516ad34c85f50214bfc37012b0/transformed/lifecycle-runtime-2.5.1/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.savedstate:savedstate:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3174df0ff980f6e975b51920009d4486/transformed/savedstate-1.2.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.savedstate:savedstate:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3174df0ff980f6e975b51920009d4486/transformed/savedstate-1.2.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/49c1c050b356e29dcf341dbf30a76580/transformed/startup-runtime-1.1.1/AndroidManifest.xml:21:5-23:41
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/49c1c050b356e29dcf341dbf30a76580/transformed/startup-runtime-1.1.1/AndroidManifest.xml:21:5-23:41
+MERGED from [androidx.tracing:tracing:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/cb7b94425f5063943c0a3a51f848638c/transformed/tracing-1.0.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.tracing:tracing:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/cb7b94425f5063943c0a3a51f848638c/transformed/tracing-1.0.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.lifecycle:lifecycle-livedata:2.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a5ef9b2936f301ebd59f3ca57751947e/transformed/lifecycle-livedata-2.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-livedata:2.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a5ef9b2936f301ebd59f3ca57751947e/transformed/lifecycle-livedata-2.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.lifecycle:lifecycle-livedata-core:2.5.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/217c83ced2ef8bad151c34f69145de26/transformed/lifecycle-livedata-core-2.5.1/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.lifecycle:lifecycle-livedata-core:2.5.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/217c83ced2ef8bad151c34f69145de26/transformed/lifecycle-livedata-core-2.5.1/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.arch.core:core-runtime:2.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/ebaa3bb6eb2a505380f2287fc2631e28/transformed/core-runtime-2.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.arch.core:core-runtime:2.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/ebaa3bb6eb2a505380f2287fc2631e28/transformed/core-runtime-2.1.0/AndroidManifest.xml:20:5-22:41
+MERGED from [androidx.interpolator:interpolator:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/d858d6b81468ab4ca87de4d07abebd23/transformed/interpolator-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.interpolator:interpolator:1.0.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/d858d6b81468ab4ca87de4d07abebd23/transformed/interpolator-1.0.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.annotation:annotation-experimental:1.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a546fe95764cac7f3528cb2abf9940ac/transformed/annotation-experimental-1.3.0/AndroidManifest.xml:20:5-44
+MERGED from [androidx.annotation:annotation-experimental:1.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a546fe95764cac7f3528cb2abf9940ac/transformed/annotation-experimental-1.3.0/AndroidManifest.xml:20:5-44
+	android:targetSdkVersion
+		INJECTED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /Volumes/SN770/Downloads/Dev/2026/Projects/CrossBuy/3rd/orb-eye/app/src/main/AndroidManifest.xml
+service#com.google.mlkit.common.internal.MlKitComponentDiscoveryService
+ADDED from [com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:9:9-15:19
+MERGED from [com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:9:9-15:19
+MERGED from [com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:9:9-15:19
+MERGED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:15:9-23:19
+MERGED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:15:9-23:19
+	android:exported
+		ADDED from [com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:11:13-37
+	tools:targetApi
+		ADDED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:19:13-32
+	android:directBootAware
+		ADDED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:17:13-43
+	android:name
+		ADDED from [com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:10:13-91
+meta-data#com.google.firebase.components:com.google.mlkit.vision.text.internal.TextRegistrar
+ADDED from [com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:12:13-14:85
+	android:value
+		ADDED from [com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:14:17-82
+	android:name
+		ADDED from [com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a4ec5d25a1c34a190a136381417d66ac/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:13:17-114
+meta-data#com.google.firebase.components:com.google.mlkit.vision.common.internal.VisionCommonRegistrar
+ADDED from [com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:12:13-14:85
+	android:value
+		ADDED from [com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:14:17-82
+	android:name
+		ADDED from [com.google.mlkit:vision-common:17.3.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b14f7d44bac21bd2f4b61d131a9bea0d/transformed/vision-common-17.3.0/AndroidManifest.xml:13:17-124
+provider#com.google.mlkit.common.internal.MlKitInitProvider
+ADDED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:9:9-13:38
+	android:authorities
+		ADDED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:11:13-69
+	android:exported
+		ADDED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:12:13-37
+	android:initOrder
+		ADDED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:13:13-35
+	android:name
+		ADDED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:10:13-78
+meta-data#com.google.firebase.components:com.google.mlkit.common.internal.CommonComponentRegistrar
+ADDED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:20:13-22:85
+	android:value
+		ADDED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:22:17-82
+	android:name
+		ADDED from [com.google.mlkit:common:18.11.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/3b3837e446bd1d82693be82eba6feaaf/transformed/common-18.11.0/AndroidManifest.xml:21:17-120
+activity#com.google.android.gms.common.api.GoogleApiActivity
+ADDED from [com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:5:9-173
+	android:exported
+		ADDED from [com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:5:146-170
+	android:theme
+		ADDED from [com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:5:86-145
+	android:name
+		ADDED from [com.google.android.gms:play-services-base:18.5.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/a50926ca14cc22251310ece75824c7c9/transformed/play-services-base-18.5.0/AndroidManifest.xml:5:19-85
+meta-data#com.google.android.gms.version
+ADDED from [com.google.android.gms:play-services-basement:18.4.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0404c6b996535772d00269f0c59d6869/transformed/play-services-basement-18.4.0/AndroidManifest.xml:6:9-122
+	android:value
+		ADDED from [com.google.android.gms:play-services-basement:18.4.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0404c6b996535772d00269f0c59d6869/transformed/play-services-basement-18.4.0/AndroidManifest.xml:6:66-119
+	android:name
+		ADDED from [com.google.android.gms:play-services-basement:18.4.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/0404c6b996535772d00269f0c59d6869/transformed/play-services-basement-18.4.0/AndroidManifest.xml:6:20-65
+provider#androidx.startup.InitializationProvider
+ADDED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:24:9-32:20
+MERGED from [androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:26:9-34:20
+MERGED from [androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:26:9-34:20
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/49c1c050b356e29dcf341dbf30a76580/transformed/startup-runtime-1.1.1/AndroidManifest.xml:26:9-30:34
+MERGED from [androidx.startup:startup-runtime:1.1.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/49c1c050b356e29dcf341dbf30a76580/transformed/startup-runtime-1.1.1/AndroidManifest.xml:26:9-30:34
+	tools:node
+		ADDED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:28:13-31
+	android:authorities
+		ADDED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:26:13-68
+	android:exported
+		ADDED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:27:13-37
+	android:name
+		ADDED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:25:13-67
+meta-data#androidx.emoji2.text.EmojiCompatInitializer
+ADDED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:29:13-31:52
+	android:value
+		ADDED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:31:17-49
+	android:name
+		ADDED from [androidx.emoji2:emoji2:1.2.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/b185c0d2974f0a49bf5a7a93c214c1a7/transformed/emoji2-1.2.0/AndroidManifest.xml:30:17-75
+permission#${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+ADDED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:22:5-24:47
+	android:protectionLevel
+		ADDED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:24:9-44
+	android:name
+		ADDED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:23:9-81
+permission#com.orb.eye.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+ADDED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:22:5-24:47
+	android:protectionLevel
+		ADDED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:24:9-44
+	android:name
+		ADDED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:23:9-81
+uses-permission#${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+ADDED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:26:5-97
+	android:name
+		ADDED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:26:22-94
+uses-permission#com.orb.eye.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+ADDED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:26:5-97
+	android:name
+		ADDED from [androidx.core:core:1.9.0] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/62bd5f0c933634171ed4412e7920dc4c/transformed/core-1.9.0/AndroidManifest.xml:26:22-94
+uses-permission#android.permission.ACCESS_NETWORK_STATE
+ADDED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:25:5-79
+MERGED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:22:5-79
+MERGED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:22:5-79
+	android:name
+		ADDED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:25:22-76
+service#com.google.android.datatransport.runtime.backends.TransportBackendDiscovery
+ADDED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:29:9-35:19
+MERGED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:36:9-38:40
+MERGED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:36:9-38:40
+	android:exported
+		ADDED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:31:13-37
+	android:name
+		ADDED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:30:13-103
+meta-data#backend:com.google.android.datatransport.cct.CctBackendFactory
+ADDED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:32:13-34:39
+	android:value
+		ADDED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:34:17-36
+	android:name
+		ADDED from [com.google.android.datatransport:transport-backend-cct:2.3.3] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/f95f3ab1f3597dd597729b0b978ad801/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:33:17-94
+service#com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService
+ADDED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:26:9-30:19
+	android:exported
+		ADDED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:28:13-37
+	android:permission
+		ADDED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:29:13-69
+	android:name
+		ADDED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:27:13-117
+receiver#com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver
+ADDED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:32:9-34:40
+	android:exported
+		ADDED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:34:13-37
+	android:name
+		ADDED from [com.google.android.datatransport:transport-runtime:2.2.6] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/c412f2c6843111fb0972f3fefeb245b4/transformed/transport-runtime-2.2.6/AndroidManifest.xml:33:13-132
+meta-data#androidx.lifecycle.ProcessLifecycleInitializer
+ADDED from [androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:31:13-33:52
+	android:value
+		ADDED from [androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:33:17-49
+	android:name
+		ADDED from [androidx.lifecycle:lifecycle-process:2.4.1] /Volumes/SN770/Users/shrek/.gradle/caches/transforms-4/20c02b3182db97b2414d9722c05c8b2a/transformed/lifecycle-process-2.4.1/AndroidManifest.xml:32:17-78

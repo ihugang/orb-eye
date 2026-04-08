@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Orb Eye</string>
+    <string name="service_description">Orb AI assistant screen control service v2.1. Provides UI tree access, interaction, screenshot, clipboard, and gesture control via local HTTP API.</string>
+</resources>

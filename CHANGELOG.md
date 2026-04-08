@@ -2,6 +2,43 @@
 
 ---
 
+## v2.2 (2026-03-24)
+
+### New Endpoints
+
+#### `GET/POST /ocr` — OCR for WebView and screenshot content
+Recognize visible text from:
+- current screen screenshot (default), or
+- caller-provided `imageBase64`.
+
+Supports:
+- region crop (`region.x/y/width/height` or `left/top/right/bottom`)
+- text matching (`text`, `contains`, `index`)
+- optional auto-tap on matched line (`tap=true`)
+
+**Example request:**
+```json
+{"text":"找朋友帮忙付","contains":true,"tap":true,"index":0}
+```
+
+**Example response (excerpt):**
+```json
+{
+  "ok": true,
+  "engine": "mlkit_chinese",
+  "lineCount": 18,
+  "matchCount": 1,
+  "matches": [{"text":"找朋友帮忙付","centerX":540,"centerY":1662}],
+  "tap": true
+}
+```
+
+**Why:** Accessibility nodes are often empty on WebView pages. `/ocr` provides a visual fallback that keeps the same HTTP-agent architecture.
+
+Also added alias endpoint `GET/POST /ocr-screen` for explicit current-screen OCR semantics (same behavior as `/ocr`).
+
+---
+
 ## v2.1 (2026-02-28)
 
 ### New Endpoints

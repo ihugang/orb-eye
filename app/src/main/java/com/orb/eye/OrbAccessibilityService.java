@@ -65,7 +65,7 @@ public class OrbAccessibilityService extends AccessibilityService {
     @Override
     public void onServiceConnected() {
         super.onServiceConnected();
-        Log.i(TAG, "Orb Eye v2.3 service connected");
+        Log.i(TAG, "Orb Eye v2.4 service connected");
         startHttpServer();
     }
 
@@ -187,13 +187,36 @@ public class OrbAccessibilityService extends AccessibilityService {
             String body = "";
             if (contentLength > 0) {
                 char[] buf = new char[contentLength];
-                reader.read(buf, 0, contentLength);
-                body = new String(buf);
+                int off = 0;
+                while (off < contentLength) {
+                    int n = reader.read(buf, off, contentLength - off);
+                    if (n <= 0) break;
+                    off += n;
+                }
+                body = new String(buf, 0, off);
+                if (off < contentLength) {
+                    Log.w(TAG, "request body truncated: read=" + off + " expected=" + contentLength);
+                }
             }
 
             String[] parts = requestLine.split(" ");
             String method = parts[0];
             String path = parts[1];
+            String route = path.contains("?") ? path.substring(0, path.indexOf("?")) : path;
+
+            // /exec: support both JSON body and raw JS body
+            if ("/exec".equals(route)) {
+                String query = path.contains("?") ? path.substring(path.indexOf("?") + 1) : "";
+                JSONObject bodyJson = parseExecBody(body, query);
+                boolean stream = bodyJson.optBoolean("stream", false);
+                if (!stream) {
+                    stream = query.contains("stream=1") || query.contains("stream=true");
+                }
+                if (stream) {
+                    handleExecStreaming(client, bodyJson);
+                    return;
+                }
+            }
 
             String response;
             try {
@@ -226,7 +249,7 @@ public class OrbAccessibilityService extends AccessibilityService {
 
         switch (route) {
             case "/ping":
-                return "{\"ok\":true,\"service\":\"orb-eye\",\"version\":\"2.3\"}";
+                return "{\"ok\":true,\"service\":\"orb-eye\",\"version\":\"" + OrbScriptEngine.VERSION + "\"}";
 
             case "/tree":
                 return getUiTree(query);
@@ -311,16 +334,150 @@ public class OrbAccessibilityService extends AccessibilityService {
                 return handleGesture(new JSONObject(body));
 
             case "/exec":
-                return handleExec(body.isEmpty() ? new JSONObject() : new JSONObject(body));
+                return handleExec(parseExecBody(body, query));
+
+            case "/stopjs":
+            case "/stop-js":
+                return handleStopJs(method, body, query);
 
             default:
                 return errorJson("Unknown route: " + route, "NOT_FOUND");
         }
     }
 
-    // ===== /exec — JavaScript scripting engine (v2.3) =====
+    // ===== /exec — JavaScript scripting engine (v2.4) =====
+
+    /**
+     * Parse /exec body: if it looks like JSON (starts with '{'), parse as
+     * {@code {"script":"...", "timeout":..., "stream":...}}.
+     * Otherwise treat the entire body as raw JavaScript.
+     * Query params ?timeout=N and ?stream=1 are also honored.
+     */
+    private JSONObject parseExecBody(String body, String query) {
+        JSONObject obj = new JSONObject();
+        String trimmed = body != null ? body.trim() : "";
+        if (trimmed.startsWith("{")) {
+            try {
+                obj = new JSONObject(trimmed);
+            } catch (Exception ignored) {
+                // malformed JSON — fall through to raw JS
+            }
+        }
+        try {
+            // Raw JS body: treat whole body as script.
+            if (!trimmed.startsWith("{")) {
+                obj.put("script", body != null ? body : "");
+            }
+            // Normalize execution id aliases from JSON body.
+            if (!obj.has("executionId") && obj.has("id")) {
+                Long parsed = parseLongSafely(obj.opt("id"));
+                if (parsed != null) {
+                    obj.put("executionId", parsed);
+                }
+            }
+            // Parse timeout/stream/executionId from query string.
+            if (query != null && !query.isEmpty()) {
+                for (String kv : query.split("&")) {
+                    String[] pair = kv.split("=", 2);
+                    if (pair.length < 2) continue;
+                    if ("timeout".equals(pair[0])) {
+                        if (!obj.has("timeout")) {
+                            try { obj.put("timeout", Integer.parseInt(pair[1])); } catch (Exception ignored) {}
+                        }
+                    } else if ("stream".equals(pair[0])) {
+                        if (!obj.has("stream")) {
+                            obj.put("stream", "1".equals(pair[1]) || "true".equals(pair[1]));
+                        }
+                    } else if ("executionId".equals(pair[0]) || "id".equals(pair[0])) {
+                        if (!obj.has("executionId")) {
+                            Long parsed = parseLongSafely(pair[1]);
+                            if (parsed != null) obj.put("executionId", parsed);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "parseExecBody error: " + e.getMessage());
+        }
+        return obj;
+    }
 
     private OrbScriptEngine scriptEngine;
+
+    private String handleStopJs(String method, String body, String query) {
+        try {
+            JSONObject result = new JSONObject();
+            Long executionId = parseExecutionId(query, body);
+            int stopped;
+            if (executionId != null) {
+                boolean stoppedOne = scriptEngine != null && scriptEngine.stopExecution(executionId);
+                stopped = stoppedOne ? 1 : 0;
+                result.put("mode", "single");
+                result.put("execution_id", executionId);
+            } else {
+                stopped = scriptEngine != null ? scriptEngine.stopAllRunningScripts() : 0;
+                result.put("mode", "all");
+            }
+            result.put("ok", true);
+            result.put("method", method);
+            result.put("stopped", stopped);
+            return result.toString();
+        } catch (Exception e) {
+            return errorJson("Failed to stop scripts: " + e.getMessage(), "INTERNAL_ERROR");
+        }
+    }
+
+    private Long parseExecutionId(String query, String body) {
+        Long fromQuery = parseExecutionIdFromQuery(query);
+        if (body == null || body.trim().isEmpty()) {
+            return fromQuery;
+        }
+        String trimmed = body.trim();
+        if (!trimmed.startsWith("{")) {
+            return fromQuery;
+        }
+        try {
+            JSONObject obj = new JSONObject(trimmed);
+            if (obj.has("executionId")) {
+                Long parsed = parseLongSafely(obj.opt("executionId"));
+                if (parsed != null) return parsed;
+            }
+            if (obj.has("id")) {
+                Long parsed = parseLongSafely(obj.opt("id"));
+                if (parsed != null) return parsed;
+            }
+        } catch (Exception ignored) {
+            // ignore malformed JSON and fallback to query value
+        }
+        return fromQuery;
+    }
+
+    private Long parseExecutionIdFromQuery(String query) {
+        if (query == null || query.isEmpty()) return null;
+        for (String kv : query.split("&")) {
+            String[] pair = kv.split("=", 2);
+            if (pair.length < 2) continue;
+            if ("executionId".equals(pair[0]) || "id".equals(pair[0])) {
+                Long parsed = parseLongSafely(pair[1]);
+                if (parsed != null) return parsed;
+            }
+        }
+        return null;
+    }
+
+    private Long parseLongSafely(Object raw) {
+        if (raw == null) return null;
+        try {
+            if (raw instanceof Number) {
+                return ((Number) raw).longValue();
+            }
+            String text = raw.toString().trim();
+            if (text.isEmpty()) return null;
+            return Long.parseLong(text);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
 
     private String handleExec(JSONObject body) throws Exception {
         String script = body.optString("script", "");
@@ -331,7 +488,88 @@ public class OrbAccessibilityService extends AccessibilityService {
         if (scriptEngine == null) {
             scriptEngine = new OrbScriptEngine(this);
         }
-        return scriptEngine.execute(script, timeoutMs);
+        Long executionId = parseLongSafely(body.opt("executionId"));
+        return scriptEngine.execute(script, timeoutMs, executionId);
+    }
+
+    private void handleExecStreaming(Socket client, JSONObject body) {
+        try {
+            String script = body.optString("script", "");
+            if (script.isEmpty()) {
+                // Write error as normal HTTP response and close
+                OutputStream out = client.getOutputStream();
+                byte[] err = errorJson("Provide 'script' field with JavaScript code", "INVALID_ARGS").getBytes("UTF-8");
+                String hdr = "HTTP/1.1 400 Bad Request\r\n"
+                        + "Content-Type: application/json; charset=utf-8\r\n"
+                        + "Content-Length: " + err.length + "\r\n\r\n";
+                out.write(hdr.getBytes("UTF-8"));
+                out.write(err);
+                out.flush();
+                client.close();
+                return;
+            }
+            int timeoutMs = body.optInt("timeout", 60000);
+            if (scriptEngine == null) {
+                scriptEngine = new OrbScriptEngine(this);
+            }
+            Long executionId = parseLongSafely(body.opt("executionId"));
+
+            // Send chunked NDJSON response header (no Content-Length)
+            OutputStream out = client.getOutputStream();
+            String hdr = "HTTP/1.1 200 OK\r\n"
+                    + "Content-Type: application/x-ndjson; charset=utf-8\r\n"
+                    + "Access-Control-Allow-Origin: *\r\n"
+                    + "Transfer-Encoding: chunked\r\n"
+                    + "\r\n";
+            out.write(hdr.getBytes("UTF-8"));
+            out.flush();
+
+            // Wrap OutputStream with chunked encoding
+            ChunkedOutputStream chunked = new ChunkedOutputStream(out);
+            scriptEngine.executeStreaming(script, timeoutMs, executionId, chunked);
+
+            // Send final zero-length chunk to signal end
+            chunked.finish();
+            out.flush();
+            client.close();
+        } catch (Exception e) {
+            Log.e(TAG, "exec streaming error: " + e.getMessage());
+            try { client.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    /**
+     * Minimal chunked transfer-encoding wrapper. Each write becomes one HTTP chunk.
+     */
+    private static class ChunkedOutputStream extends OutputStream {
+        private final OutputStream inner;
+
+        ChunkedOutputStream(OutputStream inner) { this.inner = inner; }
+
+        @Override
+        public void write(int b) throws java.io.IOException {
+            write(new byte[]{(byte) b}, 0, 1);
+        }
+
+        @Override
+        public void write(byte[] data, int off, int len) throws java.io.IOException {
+            if (len == 0) return;
+            // chunk = hex-size CRLF data CRLF
+            inner.write((Integer.toHexString(len) + "\r\n").getBytes("UTF-8"));
+            inner.write(data, off, len);
+            inner.write("\r\n".getBytes("UTF-8"));
+        }
+
+        @Override
+        public void flush() throws java.io.IOException { inner.flush(); }
+
+        /** Send the terminating zero-length chunk. */
+        void finish() throws java.io.IOException {
+            inner.write("0\r\n\r\n".getBytes("UTF-8"));
+        }
+
+        @Override
+        public void close() throws java.io.IOException { inner.close(); }
     }
 
     // Package-visible helpers for OrbScriptEngine to reuse existing implementations.
