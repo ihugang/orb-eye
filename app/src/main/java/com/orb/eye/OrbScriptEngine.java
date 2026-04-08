@@ -2,6 +2,9 @@ package com.orb.eye;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.net.Uri;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Handler;
@@ -12,18 +15,25 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.mozilla.javascript.Context;
+import org.mozilla.javascript.ContextFactory;
 import org.mozilla.javascript.Function;
 import org.mozilla.javascript.NativeArray;
 import org.mozilla.javascript.NativeObject;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
+import org.mozilla.javascript.WrappedException;
 
+import java.io.OutputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Embeds Mozilla Rhino inside orb-eye so that callers can POST a JavaScript
@@ -44,8 +54,11 @@ import java.util.concurrent.TimeUnit;
  * click(text)           → boolean
  * clickDesc(desc)       → boolean
  * clickId(id)           → boolean
+ * openPackage(pkg)      → boolean   (launch app by package)
+ * openActivity(pkg,cls) → boolean   (launch explicit activity component)
  * input(text)           → void
  * setText(text)         → void
+ * paste()               → boolean
  * scroll(dir, count)    → void      (dir: "up"/"down"/"left"/"right")
  * swipe(x1,y1,x2,y2,ms)→ boolean
  * back()                → void
@@ -63,44 +76,150 @@ import java.util.concurrent.TimeUnit;
  * waitForChange(ms)     → boolean
  * waitForText(text, ms) → boolean
  * waitUntil(fn, ms, interval) → boolean
+ * exit([result])        → void    (stop script immediately as success)
  * log(msg)              → void  (captured in result.logs)
  * </pre>
  */
 public class OrbScriptEngine {
     private static final String TAG = "OrbEye.JS";
     private final OrbAccessibilityService svc;
-    private final List<String> logBuffer = new ArrayList<>();
+    // Track active script threads by execution id so /stopjs can target one script.
+    private final ConcurrentHashMap<Long, Thread> workersByExecutionId = new ConcurrentHashMap<>();
+    // Each worker keeps its own log buffer / stream sink to avoid cross-script leakage.
+    private final ThreadLocal<List<String>> threadLogBuffer = new ThreadLocal<>();
+    private final ThreadLocal<OutputStream> threadStreamSink = new ThreadLocal<>();
+    private final AtomicLong nextExecutionId = new AtomicLong(1L);
+
+    private static final InterruptibleContextFactory CONTEXT_FACTORY = new InterruptibleContextFactory();
 
     public OrbScriptEngine(OrbAccessibilityService svc) {
         this.svc = svc;
+    }
+
+    private static class ScriptInterruptedException extends RuntimeException {
+        ScriptInterruptedException(String message) {
+            super(message);
+        }
+    }
+
+    private static class ScriptExitException extends RuntimeException {
+        final String result;
+
+        ScriptExitException(String result) {
+            super("script exited by exit()");
+            this.result = result;
+        }
+    }
+
+    private static class InterruptibleContextFactory extends ContextFactory {
+        @Override
+        protected Context makeContext() {
+            Context cx = super.makeContext();
+            // Rhino on Android: must use interpreted mode (no bytecode gen).
+            cx.setOptimizationLevel(-1);
+            // Check interrupt status regularly so force-stop can break tight JS loops.
+            cx.setInstructionObserverThreshold(10_000);
+            return cx;
+        }
+
+        @Override
+        protected void observeInstructionCount(Context cx, int instructionCount) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new ScriptInterruptedException("script execution interrupted");
+            }
+        }
+    }
+
+    public int stopAllRunningScripts() {
+        int stopped = 0;
+        for (Thread worker : workersByExecutionId.values()) {
+            if (worker.isAlive()) {
+                worker.interrupt();
+                stopped++;
+            }
+        }
+        return stopped;
+    }
+
+    public boolean stopExecution(long executionId) {
+        Thread worker = workersByExecutionId.get(executionId);
+        if (worker == null) {
+            return false;
+        }
+        if (!worker.isAlive()) {
+            workersByExecutionId.remove(executionId, worker);
+            return false;
+        }
+        worker.interrupt();
+        return true;
+    }
+
+    private long claimExecutionId(Thread worker, Long requestedExecutionId) {
+        if (requestedExecutionId != null) {
+            long executionId = requestedExecutionId;
+            if (executionId <= 0) {
+                throw new IllegalArgumentException("executionId must be positive");
+            }
+            Thread prev = workersByExecutionId.putIfAbsent(executionId, worker);
+            if (prev != null) {
+                throw new IllegalStateException("executionId already running: " + executionId);
+            }
+            return executionId;
+        }
+
+        while (true) {
+            long executionId = nextExecutionId.getAndIncrement();
+            if (executionId <= 0) {
+                nextExecutionId.compareAndSet(executionId + 1, 1L);
+                continue;
+            }
+            if (workersByExecutionId.putIfAbsent(executionId, worker) == null) {
+                return executionId;
+            }
+        }
     }
 
     /**
      * Execute a JS script with a timeout. Returns JSON result.
      */
     public String execute(String script, int timeoutMs) {
-        logBuffer.clear();
+        return execute(script, timeoutMs, null);
+    }
+
+    public String execute(String script, int timeoutMs, Long requestedExecutionId) {
+        List<String> logs = Collections.synchronizedList(new ArrayList<>());
         long start = System.currentTimeMillis();
         final Object[] resultHolder = {null};
-        final Exception[] errorHolder = {null};
+        final Throwable[] errorHolder = {null};
+        final ScriptExitException[] exitHolder = {null};
+        final long[] executionIdHolder = {0L};
 
         Thread worker = new Thread(() -> {
-            Context cx = Context.enter();
+            threadLogBuffer.set(logs);
             try {
-                // Rhino on Android: must use interpreted mode (no bytecode gen)
-                cx.setOptimizationLevel(-1);
-                Scriptable scope = cx.initStandardObjects();
-
-                injectAPI(cx, scope);
-
-                Object result = cx.evaluateString(scope, script, "exec", 1, null);
-                resultHolder[0] = Context.jsToJava(result, Object.class);
-            } catch (Exception e) {
-                errorHolder[0] = e;
+                resultHolder[0] = CONTEXT_FACTORY.call(cx -> {
+                    Scriptable scope = cx.initStandardObjects();
+                    injectAPI(cx, scope);
+                    Object result = cx.evaluateString(scope, script, "exec", 1, null);
+                    return Context.jsToJava(result, Object.class);
+                });
+            } catch (Throwable t) {
+                ScriptExitException exit = findScriptExit(t);
+                if (exit != null) {
+                    exitHolder[0] = exit;
+                } else {
+                    errorHolder[0] = t;
+                }
             } finally {
-                Context.exit();
+                threadLogBuffer.remove();
+                workersByExecutionId.remove(executionIdHolder[0], Thread.currentThread());
             }
         });
+        try {
+            executionIdHolder[0] = claimExecutionId(worker, requestedExecutionId);
+        } catch (RuntimeException e) {
+            return buildError(normalizeErrorMessage(e), logs, -1L, System.currentTimeMillis() - start);
+        }
         worker.setDaemon(true);
         worker.start();
 
@@ -113,25 +232,151 @@ public class OrbScriptEngine {
         if (worker.isAlive()) {
             worker.interrupt();
             return buildError("script execution timed out after " + timeoutMs + "ms",
-                    System.currentTimeMillis() - start);
+                    logs, executionIdHolder[0], System.currentTimeMillis() - start);
+        }
+
+        if (exitHolder[0] != null) {
+            Object exitResult = exitHolder[0].result;
+            if (exitResult == null || String.valueOf(exitResult).isEmpty()) {
+                exitResult = "exit";
+            }
+            return buildSuccess(exitResult, logs, executionIdHolder[0], System.currentTimeMillis() - start);
         }
 
         if (errorHolder[0] != null) {
-            return buildError(errorHolder[0].getMessage(),
-                    System.currentTimeMillis() - start);
+            return buildError(normalizeErrorMessage(errorHolder[0]),
+                    logs, executionIdHolder[0], System.currentTimeMillis() - start);
         }
 
-        return buildSuccess(resultHolder[0], System.currentTimeMillis() - start);
+        return buildSuccess(resultHolder[0], logs, executionIdHolder[0], System.currentTimeMillis() - start);
+    }
+
+    /**
+     * Execute a JS script in streaming mode. Each log() call emits an NDJSON line
+     * to {@code out} immediately, so the caller sees output in real time.
+     * The final line is the result JSON.
+     *
+     * Wire format (one JSON object per line):
+     * <pre>
+     * {"type":"log","msg":"..."}
+     * {"type":"log","msg":"..."}
+     * {"type":"result","ok":true,"result":"...","duration_ms":123}
+     * </pre>
+     */
+    public void executeStreaming(String script, int timeoutMs, OutputStream out) {
+        executeStreaming(script, timeoutMs, null, out);
+    }
+
+    public void executeStreaming(String script, int timeoutMs, Long requestedExecutionId, OutputStream out) {
+        List<String> logs = Collections.synchronizedList(new ArrayList<>());
+        long start = System.currentTimeMillis();
+        final Object[] resultHolder = {null};
+        final Throwable[] errorHolder = {null};
+        final ScriptExitException[] exitHolder = {null};
+        final long[] executionIdHolder = {0L};
+
+        Thread worker = new Thread(() -> {
+            threadLogBuffer.set(logs);
+            threadStreamSink.set(out);
+            try {
+                resultHolder[0] = CONTEXT_FACTORY.call(cx -> {
+                    Scriptable scope = cx.initStandardObjects();
+                    injectAPI(cx, scope);
+                    Object result = cx.evaluateString(scope, script, "exec", 1, null);
+                    return Context.jsToJava(result, Object.class);
+                });
+            } catch (Throwable t) {
+                ScriptExitException exit = findScriptExit(t);
+                if (exit != null) {
+                    exitHolder[0] = exit;
+                } else {
+                    errorHolder[0] = t;
+                }
+            } finally {
+                threadStreamSink.remove();
+                threadLogBuffer.remove();
+                workersByExecutionId.remove(executionIdHolder[0], Thread.currentThread());
+            }
+        });
+        try {
+            executionIdHolder[0] = claimExecutionId(worker, requestedExecutionId);
+        } catch (RuntimeException e) {
+            try {
+                writeStreamLine(out, buildStreamResult(false,
+                        normalizeErrorMessage(e), null, -1L, System.currentTimeMillis() - start));
+            } catch (Exception ignored) {
+            }
+            return;
+        }
+        worker.setDaemon(true);
+        worker.start();
+
+        try {
+            worker.join(timeoutMs > 0 ? timeoutMs : 60000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        long duration = System.currentTimeMillis() - start;
+
+        try {
+            if (worker.isAlive()) {
+                worker.interrupt();
+                writeStreamLine(out, buildStreamResult(false,
+                        "script execution timed out after " + timeoutMs + "ms", null, executionIdHolder[0], duration));
+            } else if (exitHolder[0] != null) {
+                String exitResult = exitHolder[0].result;
+                if (exitResult == null || exitResult.isEmpty()) {
+                    exitResult = "exit";
+                }
+                writeStreamLine(out, buildStreamResult(true, null,
+                        exitResult, executionIdHolder[0], duration));
+            } else if (errorHolder[0] != null) {
+                writeStreamLine(out, buildStreamResult(false,
+                        normalizeErrorMessage(errorHolder[0]), null, executionIdHolder[0], duration));
+            } else {
+                writeStreamLine(out, buildStreamResult(true, null,
+                        resultHolder[0] != null ? resultHolder[0].toString() : null, executionIdHolder[0], duration));
+            }
+            out.flush();
+        } catch (Exception e) {
+            Log.e(TAG, "stream write final result error: " + e.getMessage());
+        }
+    }
+
+    private String buildStreamResult(boolean ok, String error, String result, long executionId, long durationMs) {
+        try {
+            JSONObject json = new JSONObject();
+            json.put("type", "result");
+            json.put("ok", ok);
+            if (error != null) json.put("error", error);
+            if (result != null) json.put("result", result);
+            if (executionId > 0) json.put("execution_id", executionId);
+            json.put("duration_ms", durationMs);
+            return json.toString();
+        } catch (Exception e) {
+            return "{\"type\":\"result\",\"ok\":false,\"error\":\"json build failed\"}";
+        }
+    }
+
+    private void writeStreamLine(OutputStream out, String line) {
+        try {
+            out.write((line + "\n").getBytes("UTF-8"));
+            out.flush();
+        } catch (Exception e) {
+            Log.e(TAG, "stream write error: " + e.getMessage());
+        }
     }
 
     // ─── Result builders ────────────────────────────────────────────────────
 
-    private String buildSuccess(Object result, long durationMs) {
+    private String buildSuccess(Object result, List<String> logs, long executionId, long durationMs) {
         try {
             JSONObject json = new JSONObject();
             json.put("ok", true);
             json.put("result", result != null ? result.toString() : null);
-            json.put("logs", new JSONArray(logBuffer));
+            json.put("logs", new JSONArray(logs));
+            if (executionId > 0) json.put("execution_id", executionId);
             json.put("duration_ms", durationMs);
             return json.toString();
         } catch (Exception e) {
@@ -139,17 +384,48 @@ public class OrbScriptEngine {
         }
     }
 
-    private String buildError(String message, long durationMs) {
+    private String buildError(String message, List<String> logs, long executionId, long durationMs) {
         try {
             JSONObject json = new JSONObject();
             json.put("ok", false);
             json.put("error", message);
-            json.put("logs", new JSONArray(logBuffer));
+            json.put("logs", new JSONArray(logs));
+            if (executionId > 0) json.put("execution_id", executionId);
             json.put("duration_ms", durationMs);
             return json.toString();
         } catch (Exception e) {
             return "{\"ok\":false,\"error\":\"" + message + "\"}";
         }
+    }
+
+    private String normalizeErrorMessage(Throwable throwable) {
+        if (throwable == null) return "unknown script error";
+        if (throwable instanceof InterruptedException || throwable instanceof ScriptInterruptedException) {
+            return "script execution interrupted";
+        }
+        String msg = throwable.getMessage();
+        return (msg == null || msg.isEmpty()) ? throwable.getClass().getSimpleName() : msg;
+    }
+
+    private ScriptExitException findScriptExit(Throwable throwable) {
+        Throwable cur = throwable;
+        int guard = 0;
+        while (cur != null && guard < 16) {
+            if (cur instanceof ScriptExitException) {
+                return (ScriptExitException) cur;
+            }
+            if (cur instanceof WrappedException) {
+                Throwable wrapped = ((WrappedException) cur).getWrappedException();
+                if (wrapped != null && wrapped != cur) {
+                    cur = wrapped;
+                    guard++;
+                    continue;
+                }
+            }
+            cur = cur.getCause();
+            guard++;
+        }
+        return null;
     }
 
     // ─── API Injection ──────────────────────────────────────────────────────
@@ -177,8 +453,12 @@ public class OrbScriptEngine {
         "function click(t) { return _orb.click(t); }\n" +
         "function clickDesc(d) { return _orb.clickDesc(d); }\n" +
         "function clickId(id) { return _orb.clickId(id); }\n" +
+        "function openPackage(pkg) { return _orb.openPackage(String(pkg || '')); }\n" +
+        "function openActivity(pkg, cls) { return _orb.openActivity(String(pkg || ''), String(cls || '')); }\n" +
+        "function openUrl(url) { return _orb.openUrl(String(url || '')); }\n" +
         "function input(t) { _orb.input(t); }\n" +
         "function setText(t) { _orb.setText(t); }\n" +
+        "function paste() { return _orb.paste(); }\n" +
         "function scroll(dir, count) { _orb.scroll(dir || 'down', count || 1); }\n" +
         "function swipe(x1,y1,x2,y2,ms) { return _orb.swipe(x1,y1,x2,y2,ms||300); }\n" +
         "function back() { _orb.back(); }\n" +
@@ -193,6 +473,7 @@ public class OrbScriptEngine {
         "function sleep(ms) { _orb.sleep(ms); }\n" +
         "function waitForChange(ms) { return _orb.waitForChange(ms || 5000); }\n" +
         "function waitForText(t, ms) { return _orb.waitForText(t, ms || 10000); }\n" +
+        "function exit(v) { if (v === undefined || v === null) _orb.exit(); else _orb.exit(String(v)); }\n" +
         "function log() { _orb.log(Array.prototype.slice.call(arguments).join(' ')); }\n" +
         // waitUntil needs special handling since it takes a JS function
         "function waitUntil(fn, ms, interval) {\n" +
@@ -336,7 +617,70 @@ public class OrbScriptEngine {
             }
         }
 
+        public void exit() {
+            throw new ScriptExitException("exit");
+        }
+
+        public void exit(String result) {
+            throw new ScriptExitException(result);
+        }
+
         // ── Interaction ─────────────────────────────────────────────────
+
+        public boolean openPackage(String packageName) {
+            try {
+                String pkg = packageName != null ? packageName.trim() : "";
+                if (pkg.isEmpty()) return false;
+                Intent intent = svc.getPackageManager().getLaunchIntentForPackage(pkg);
+                if (intent == null) return false;
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                svc.startActivity(intent);
+                return true;
+            } catch (Exception e) {
+                Log.e(TAG, "openPackage error: " + e.getMessage());
+                return false;
+            }
+        }
+
+        public boolean openActivity(String packageName, String activityName) {
+            try {
+                String pkg = packageName != null ? packageName.trim() : "";
+                String cls = activityName != null ? activityName.trim() : "";
+                if (pkg.isEmpty() || cls.isEmpty()) return false;
+                Intent intent = new Intent();
+                intent.setComponent(new ComponentName(pkg, cls));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                svc.startActivity(intent);
+                return true;
+            } catch (Exception e) {
+                Log.e(TAG, "openActivity error: " + e.getMessage());
+                return false;
+            }
+        }
+
+        /**
+         * Open a URL via ACTION_VIEW intent, equivalent to:
+         *   adb shell am start --user 0 -a android.intent.action.VIEW -d <url> [package]
+         * If the URL contains "taobao.com" or "tmall.com", it targets com.taobao.taobao directly.
+         */
+        public boolean openUrl(String url) {
+            try {
+                String u = url != null ? url.trim() : "";
+                if (u.isEmpty()) return false;
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(u));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                // Route to Taobao app directly for Taobao/Tmall URLs and schemes
+                if (u.contains("taobao.com") || u.contains("tmall.com")
+                        || u.startsWith("taobao://") || u.startsWith("tmall://")) {
+                    intent.setPackage("com.taobao.taobao");
+                }
+                svc.startActivity(intent);
+                return true;
+            } catch (Exception e) {
+                Log.e(TAG, "openUrl error: " + e.getMessage());
+                return false;
+            }
+        }
 
         public boolean tap(int x, int y) {
             try {
@@ -434,6 +778,24 @@ public class OrbScriptEngine {
 
         public void setText(String text) {
             input(text); // same underlying mechanism
+        }
+
+        public boolean paste() {
+            try {
+                AccessibilityNodeInfo root = svc.getRootInActiveWindow();
+                if (root == null) return false;
+                AccessibilityNodeInfo focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+                if (focused == null) {
+                    root.recycle();
+                    return false;
+                }
+                boolean ok = focused.performAction(AccessibilityNodeInfo.ACTION_PASTE);
+                root.recycle();
+                return ok;
+            } catch (Exception e) {
+                Log.e(TAG, "paste error: " + e.getMessage());
+                return false;
+            }
         }
 
         public void scroll(String direction, int count) {
@@ -572,8 +934,23 @@ public class OrbScriptEngine {
 
         public void log(String msg) {
             Log.i(TAG, "[script] " + msg);
-            synchronized (logBuffer) {
-                logBuffer.add(msg);
+            List<String> logs = threadLogBuffer.get();
+            if (logs != null) {
+                synchronized (logs) {
+                    logs.add(msg);
+                }
+            }
+            // Stream mode: emit NDJSON line immediately
+            OutputStream sink = threadStreamSink.get();
+            if (sink != null) {
+                try {
+                    JSONObject obj = new JSONObject();
+                    obj.put("type", "log");
+                    obj.put("msg", msg);
+                    writeStreamLine(sink, obj.toString());
+                } catch (Exception e) {
+                    Log.e(TAG, "stream log error: " + e.getMessage());
+                }
             }
         }
 
