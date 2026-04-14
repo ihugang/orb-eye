@@ -2,6 +2,44 @@ plugins {
     id 'com.android.application'
 }
 
+// Manually maintain only the first two segments, e.g. "2.7".
+def versionPrefix = "2.7"
+def localTz = TimeZone.getTimeZone("Asia/Shanghai")
+def todayMonth = new Date().format("MM", localTz)
+def todayDay = new Date().format("dd", localTz)
+def computedVersionName = "${versionPrefix}.${todayMonth}.${todayDay}"
+def buildTimeUtc = new Date().format("yyyy-MM-dd HH:mm:ss 'UTC'", TimeZone.getTimeZone("UTC"))
+
+def parseIntSafe = { String raw, int fallback ->
+    try {
+        return Integer.parseInt(raw != null ? raw.trim() : "")
+    } catch (Exception ignored) {
+        return fallback
+    }
+}
+
+def buildNumberFile = new File(System.getProperty("user.home"), ".orb-eye-build-number")
+def currentBuildNumber = 0
+if (buildNumberFile.exists()) {
+    currentBuildNumber = parseIntSafe(buildNumberFile.text, 0)
+}
+def minimumBuildNumber = 8
+if (currentBuildNumber < minimumBuildNumber) {
+    currentBuildNumber = minimumBuildNumber
+}
+def requestedTasks = gradle.startParameter.taskNames.collect { String t -> t.toLowerCase(Locale.ROOT) }
+def shouldBumpBuild = requestedTasks.isEmpty() || requestedTasks.any { String t ->
+    t.contains("assemble") || t.contains("build") || t.contains("install")
+            || t.contains("bundle") || t.contains("compile")
+}
+if (shouldBumpBuild) {
+    currentBuildNumber += 1
+    buildNumberFile.text = "${currentBuildNumber}\n"
+}
+if (currentBuildNumber < 1) {
+    currentBuildNumber = 1
+}
+
 android {
     namespace 'com.orb.eye'
     compileSdk 35
@@ -10,14 +48,21 @@ android {
         applicationId "com.orb.eye"
         minSdk 26
         targetSdk 35
-        versionCode 7
-        versionName "2.6"
+        versionCode currentBuildNumber
+        versionName computedVersionName
+        buildConfigField "String", "BUILD_TIME_UTC", "\"${buildTimeUtc}\""
+        buildConfigField "String", "VERSION_PREFIX", "\"${versionPrefix}\""
+        buildConfigField "int", "BUILD_NUMBER", "${currentBuildNumber}"
     }
 
     buildTypes {
         release {
             minifyEnabled false
         }
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     compileOptions {

@@ -9,7 +9,11 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PixelFormat;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.os.Build;
@@ -19,9 +23,21 @@ import android.os.Looper;
 import android.os.Parcelable;
 import android.util.Base64;
 import android.util.Log;
+import android.util.TypedValue;
 import android.view.Display;
+import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.widget.ArrayAdapter;
+import android.widget.Button;
+import android.widget.HorizontalScrollView;
+import android.widget.LinearLayout;
+import android.widget.ListView;
+import android.widget.TextView;
 
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.Text;
@@ -43,8 +59,11 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -62,6 +81,17 @@ public class OrbAccessibilityService extends AccessibilityService {
     private static final String OCR_ENGINE_MLKIT = "mlkit";
     private static final String OCR_ENGINE_PADDLE = "paddle";
     private static final int OCR_MIN_TOKEN_SIZE_PX = 1;
+    private static final int INSPECTOR_DEFAULT_MAX_DEPTH = 40;
+    private static final int[] INSPECTOR_LEVEL_COLORS = new int[] {
+            0xFF00BCD4, // cyan
+            0xFF4CAF50, // green
+            0xFFFFC107, // amber
+            0xFFFF5722, // deep orange
+            0xFF03A9F4, // light blue
+            0xFF8BC34A, // light green
+            0xFFFF9800, // orange
+            0xFFF44336  // red
+    };
 
     private ServerSocket serverSocket;
     private Thread serverThread;
@@ -78,12 +108,52 @@ public class OrbAccessibilityService extends AccessibilityService {
     private final Object paddleLock = new Object();
     private Predictor paddlePredictor;
     private String paddleInitError = "";
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    // ===== Floating inspector (AutoJs6-style) =====
+    private final Object inspectorLock = new Object();
+    private WindowManager inspectorWindowManager;
+    private InspectorBoundsView inspectorBoundsView;
+    private LinearLayout inspectorPanelView;
+    private WindowManager.LayoutParams inspectorPanelLayoutParams;
+    private LinearLayout inspectorBreadcrumbPanelView;
+    private WindowManager.LayoutParams inspectorBreadcrumbLayoutParams;
+    private HorizontalScrollView inspectorBreadcrumbScrollView;
+    private LinearLayout inspectorBreadcrumbContainer;
+    private LinearLayout inspectorControlView;
+    private WindowManager.LayoutParams inspectorControlLayoutParams;
+    private Button inspectorControlToggleButton;
+    private Button inspectorControlRefreshButton;
+    private TextView inspectorControlOpacityTextView;
+    private ListView inspectorTreeListView;
+    private TextView inspectorInfoTextView;
+    private Button inspectorParentButton;
+    private Button inspectorInfoToggleButton;
+    private TextView inspectorHeaderTextView;
+    private InspectorTreeAdapter inspectorTreeAdapter;
+    private final ArrayList<InspectorNode> inspectorAllNodes = new ArrayList<>();
+    private final ArrayList<InspectorNode> inspectorVisibleNodes = new ArrayList<>();
+    private InspectorNode inspectorRootNode;
+    private InspectorNode inspectorSelectedNode;
+    private int inspectorMaxDepth = INSPECTOR_DEFAULT_MAX_DEPTH;
+    private float inspectorOpacity = 0.88f;
+    private boolean inspectorInfoExpanded = true;
+    private boolean inspectorRunning = false;
+    private String inspectorLastError = "";
 
     @Override
     public void onServiceConnected() {
         super.onServiceConnected();
         Log.i(TAG, "Orb Eye v2.4 service connected");
         startHttpServer();
+        mainHandler.post(() -> {
+            try {
+                ensureInspectorControllerOnMain();
+            } catch (Exception e) {
+                inspectorLastError = e.getMessage() != null ? e.getMessage() : "controller init failed";
+                Log.e(TAG, "Inspector controller init failed: " + inspectorLastError);
+            }
+        });
     }
 
     @Override
@@ -157,6 +227,7 @@ public class OrbAccessibilityService extends AccessibilityService {
     public void onDestroy() {
         super.onDestroy();
         stopHttpServer();
+        shutdownInspector();
         releasePaddlePredictor();
     }
 
@@ -305,6 +376,30 @@ public class OrbAccessibilityService extends AccessibilityService {
 
             case "/inspect":
                 return getUiInspect(query);
+
+            case "/inspector/start":
+            case "/inspector/open":
+                return handleInspectorStart(query);
+
+            case "/inspector/refresh":
+                return handleInspectorRefresh(query);
+
+            case "/inspector/stop":
+            case "/inspector/close":
+                return handleInspectorStop();
+
+            case "/inspector/state":
+                return handleInspectorState();
+
+            case "/inspector/controller/show":
+                return handleInspectorControllerShow();
+
+            case "/inspector/controller/hide":
+                return handleInspectorControllerHide();
+
+            case "/inspector/opacity":
+            case "/inspector/alpha":
+                return handleInspectorOpacity(query);
 
             case "/screen":
                 return getScreenElements(query);
@@ -1220,7 +1315,21 @@ public class OrbAccessibilityService extends AccessibilityService {
         }
     }
 
+    private float getQueryFloat(String query, String key, float defaultValue) {
+        String val = getQueryParam(query, key);
+        if (val == null || val.isEmpty()) return defaultValue;
+        try {
+            return Float.parseFloat(val);
+        } catch (Exception ignored) {
+            return defaultValue;
+        }
+    }
+
     private int clampInt(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private float clampFloat(float value, float min, float max) {
         return Math.max(min, Math.min(max, value));
     }
 
@@ -1228,6 +1337,1376 @@ public class OrbAccessibilityService extends AccessibilityService {
         if (needle == null || needle.isEmpty()) return true;
         if (haystack == null || haystack.isEmpty()) return false;
         return haystack.toLowerCase(Locale.ROOT).contains(needle.toLowerCase(Locale.ROOT));
+    }
+
+    // ===== Floating Inspector (AutoJs6-style) =====
+
+    private String handleInspectorStart(String query) throws Exception {
+        final AtomicReference<String> outRef = new AtomicReference<>(null);
+        final AtomicReference<String> errRef = new AtomicReference<>(null);
+        final CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                int maxDepth = clampInt(getQueryInt(query, "maxDepth", INSPECTOR_DEFAULT_MAX_DEPTH), 0, 60);
+                inspectorMaxDepth = maxDepth;
+                startInspectorOnMain(maxDepth);
+                outRef.set(buildInspectorStateJsonOnMain().toString());
+            } catch (Exception e) {
+                errRef.set(e.getMessage());
+            } finally {
+                latch.countDown();
+            }
+        });
+        boolean done = latch.await(5, TimeUnit.SECONDS);
+        if (!done) return errorJson("Inspector start timed out", "TIMEOUT");
+        if (errRef.get() != null) return errorJson("Inspector start failed: " + errRef.get(), "INSPECTOR_FAILED");
+        return outRef.get() != null ? outRef.get() : errorJson("Inspector start failed", "INSPECTOR_FAILED");
+    }
+
+    private String handleInspectorRefresh(String query) throws Exception {
+        final AtomicReference<String> outRef = new AtomicReference<>(null);
+        final AtomicReference<String> errRef = new AtomicReference<>(null);
+        final CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                int maxDepth = clampInt(getQueryInt(query, "maxDepth", INSPECTOR_DEFAULT_MAX_DEPTH), 0, 60);
+                inspectorMaxDepth = maxDepth;
+                if (!inspectorRunning) {
+                    startInspectorOnMain(maxDepth);
+                } else {
+                    refreshInspectorDataOnMain(maxDepth, true);
+                }
+                outRef.set(buildInspectorStateJsonOnMain().toString());
+            } catch (Exception e) {
+                errRef.set(e.getMessage());
+            } finally {
+                latch.countDown();
+            }
+        });
+        boolean done = latch.await(5, TimeUnit.SECONDS);
+        if (!done) return errorJson("Inspector refresh timed out", "TIMEOUT");
+        if (errRef.get() != null) return errorJson("Inspector refresh failed: " + errRef.get(), "INSPECTOR_FAILED");
+        return outRef.get() != null ? outRef.get() : errorJson("Inspector refresh failed", "INSPECTOR_FAILED");
+    }
+
+    private String handleInspectorStop() throws Exception {
+        final AtomicReference<String> outRef = new AtomicReference<>(null);
+        final AtomicReference<String> errRef = new AtomicReference<>(null);
+        final CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                stopInspectorOnMain();
+                outRef.set(buildInspectorStateJsonOnMain().toString());
+            } catch (Exception e) {
+                errRef.set(e.getMessage());
+            } finally {
+                latch.countDown();
+            }
+        });
+        boolean done = latch.await(5, TimeUnit.SECONDS);
+        if (!done) return errorJson("Inspector stop timed out", "TIMEOUT");
+        if (errRef.get() != null) return errorJson("Inspector stop failed: " + errRef.get(), "INSPECTOR_FAILED");
+        return outRef.get() != null ? outRef.get() : errorJson("Inspector stop failed", "INSPECTOR_FAILED");
+    }
+
+    private String handleInspectorState() throws Exception {
+        final AtomicReference<String> outRef = new AtomicReference<>(null);
+        final CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                outRef.set(buildInspectorStateJsonOnMain().toString());
+            } catch (Exception e) {
+                try {
+                    outRef.set(errorJson("Inspector state failed: " + e.getMessage(), "INSPECTOR_FAILED"));
+                } catch (Exception ignored) {
+                    outRef.set("{\"ok\":false,\"error\":\"Inspector state failed\",\"code\":\"INSPECTOR_FAILED\"}");
+                }
+            } finally {
+                latch.countDown();
+            }
+        });
+        boolean done = latch.await(5, TimeUnit.SECONDS);
+        if (!done) return errorJson("Inspector state timed out", "TIMEOUT");
+        return outRef.get() != null ? outRef.get() : errorJson("Inspector state unavailable", "INSPECTOR_FAILED");
+    }
+
+    private String handleInspectorControllerShow() throws Exception {
+        final AtomicReference<String> outRef = new AtomicReference<>(null);
+        final AtomicReference<String> errRef = new AtomicReference<>(null);
+        final CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                ensureInspectorControllerOnMain();
+                outRef.set(buildInspectorStateJsonOnMain().toString());
+            } catch (Exception e) {
+                errRef.set(e.getMessage());
+            } finally {
+                latch.countDown();
+            }
+        });
+        boolean done = latch.await(5, TimeUnit.SECONDS);
+        if (!done) return errorJson("Inspector controller show timed out", "TIMEOUT");
+        if (errRef.get() != null) return errorJson("Inspector controller show failed: " + errRef.get(), "INSPECTOR_FAILED");
+        return outRef.get() != null ? outRef.get() : errorJson("Inspector controller show failed", "INSPECTOR_FAILED");
+    }
+
+    private String handleInspectorControllerHide() throws Exception {
+        final AtomicReference<String> outRef = new AtomicReference<>(null);
+        final AtomicReference<String> errRef = new AtomicReference<>(null);
+        final CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                removeInspectorControllerOnMain();
+                outRef.set(buildInspectorStateJsonOnMain().toString());
+            } catch (Exception e) {
+                errRef.set(e.getMessage());
+            } finally {
+                latch.countDown();
+            }
+        });
+        boolean done = latch.await(5, TimeUnit.SECONDS);
+        if (!done) return errorJson("Inspector controller hide timed out", "TIMEOUT");
+        if (errRef.get() != null) return errorJson("Inspector controller hide failed: " + errRef.get(), "INSPECTOR_FAILED");
+        return outRef.get() != null ? outRef.get() : errorJson("Inspector controller hide failed", "INSPECTOR_FAILED");
+    }
+
+    private String handleInspectorOpacity(String query) throws Exception {
+        final AtomicReference<String> outRef = new AtomicReference<>(null);
+        final AtomicReference<String> errRef = new AtomicReference<>(null);
+        final CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                float requested = getQueryFloat(query, "value", Float.NaN);
+                if (Float.isNaN(requested)) requested = getQueryFloat(query, "opacity", Float.NaN);
+                if (Float.isNaN(requested)) requested = getQueryFloat(query, "alpha", Float.NaN);
+
+                float next = inspectorOpacity;
+                if (!Float.isNaN(requested)) {
+                    next = requested;
+                } else {
+                    float step = getQueryFloat(query, "step", 0.05f);
+                    String action = getQueryParam(query, "action");
+                    if ("up".equalsIgnoreCase(action)) {
+                        next = inspectorOpacity + step;
+                    } else if ("down".equalsIgnoreCase(action)) {
+                        next = inspectorOpacity - step;
+                    }
+                }
+                setInspectorOpacityOnMain(next);
+                outRef.set(buildInspectorStateJsonOnMain().toString());
+            } catch (Exception e) {
+                errRef.set(e.getMessage());
+            } finally {
+                latch.countDown();
+            }
+        });
+        boolean done = latch.await(5, TimeUnit.SECONDS);
+        if (!done) return errorJson("Inspector opacity update timed out", "TIMEOUT");
+        if (errRef.get() != null) return errorJson("Inspector opacity update failed: " + errRef.get(), "INSPECTOR_FAILED");
+        return outRef.get() != null ? outRef.get() : errorJson("Inspector opacity update failed", "INSPECTOR_FAILED");
+    }
+
+    private void setInspectorOpacityOnMain(float requestedOpacity) {
+        inspectorOpacity = clampFloat(requestedOpacity, 0.20f, 1.0f);
+        if (inspectorControlView != null) {
+            inspectorControlView.setAlpha(inspectorOpacity);
+        }
+        if (inspectorPanelView != null) {
+            inspectorPanelView.setAlpha(Math.max(0.30f, inspectorOpacity));
+        }
+        if (inspectorBreadcrumbPanelView != null) {
+            inspectorBreadcrumbPanelView.setAlpha(Math.max(0.35f, inspectorOpacity));
+        }
+        if (inspectorBoundsView != null) {
+            inspectorBoundsView.setOverlayOpacity(inspectorOpacity);
+        }
+        updateInspectorControlButtonsOnMain();
+    }
+
+    private void ensureInspectorControllerOnMain() throws Exception {
+        if (inspectorWindowManager == null) {
+            inspectorWindowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+        }
+        if (inspectorWindowManager == null) {
+            throw new IllegalStateException("WindowManager unavailable");
+        }
+        if (inspectorControlView == null) {
+            inspectorControlView = buildInspectorControlView();
+        }
+        if (inspectorControlView.getParent() == null) {
+            if (inspectorControlLayoutParams == null) {
+                inspectorControlLayoutParams = new WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                                | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                        PixelFormat.TRANSLUCENT
+                );
+                inspectorControlLayoutParams.gravity = Gravity.TOP | Gravity.START;
+                inspectorControlLayoutParams.x = dp(8);
+                inspectorControlLayoutParams.y = dp(120);
+                inspectorControlLayoutParams.setTitle("orb-eye-inspector-controller");
+            }
+            inspectorWindowManager.addView(inspectorControlView, inspectorControlLayoutParams);
+        }
+        setInspectorOpacityOnMain(inspectorOpacity);
+        updateInspectorControlButtonsOnMain();
+    }
+
+    private void removeInspectorControllerOnMain() {
+        if (inspectorWindowManager == null || inspectorControlView == null) return;
+        if (inspectorControlView.getParent() != null) {
+            try {
+                inspectorWindowManager.removeView(inspectorControlView);
+            } catch (Exception ignored) {
+                // ignore stale window reference
+            }
+        }
+    }
+
+    private LinearLayout buildInspectorControlView() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setBackgroundColor(0xDD11161C);
+        bar.setPadding(dp(6), dp(6), dp(6), dp(6));
+
+        TextView dragHandle = new TextView(this);
+        dragHandle.setText("Orb");
+        dragHandle.setTextColor(Color.WHITE);
+        dragHandle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        dragHandle.setPadding(dp(8), dp(8), dp(8), dp(8));
+        bar.addView(dragHandle);
+
+        final float[] startTouch = new float[2];
+        final int[] startPos = new int[2];
+        dragHandle.setOnTouchListener((v, event) -> {
+            if (inspectorControlLayoutParams == null || inspectorWindowManager == null) return false;
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    startTouch[0] = event.getRawX();
+                    startTouch[1] = event.getRawY();
+                    startPos[0] = inspectorControlLayoutParams.x;
+                    startPos[1] = inspectorControlLayoutParams.y;
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    inspectorControlLayoutParams.x = startPos[0] + (int) (event.getRawX() - startTouch[0]);
+                    inspectorControlLayoutParams.y = startPos[1] + (int) (event.getRawY() - startTouch[1]);
+                    inspectorWindowManager.updateViewLayout(inspectorControlView, inspectorControlLayoutParams);
+                    return true;
+                default:
+                    return false;
+            }
+        });
+
+        Button toggleButton = new Button(this);
+        toggleButton.setText("Inspect");
+        toggleButton.setOnClickListener(v -> {
+            try {
+                if (inspectorRunning) {
+                    stopInspectorOnMain();
+                } else {
+                    startInspectorOnMain(inspectorMaxDepth);
+                }
+                updateInspectorControlButtonsOnMain();
+            } catch (Exception e) {
+                inspectorLastError = e.getMessage() != null ? e.getMessage() : "toggle failed";
+                updateInspectorHeaderOnMain();
+            }
+        });
+        inspectorControlToggleButton = toggleButton;
+        bar.addView(toggleButton);
+
+        Button refreshButton = new Button(this);
+        refreshButton.setText("R");
+        refreshButton.setOnClickListener(v -> {
+            try {
+                if (inspectorRunning) {
+                    refreshInspectorDataOnMain(inspectorMaxDepth, true);
+                }
+            } catch (Exception e) {
+                inspectorLastError = e.getMessage() != null ? e.getMessage() : "refresh failed";
+                updateInspectorHeaderOnMain();
+            }
+        });
+        inspectorControlRefreshButton = refreshButton;
+        bar.addView(refreshButton);
+
+        Button opacityDownButton = new Button(this);
+        opacityDownButton.setText("-");
+        opacityDownButton.setOnClickListener(v -> setInspectorOpacityOnMain(inspectorOpacity - 0.08f));
+        bar.addView(opacityDownButton);
+
+        TextView opacityText = new TextView(this);
+        opacityText.setTextColor(Color.WHITE);
+        opacityText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        opacityText.setPadding(dp(6), dp(8), dp(6), dp(8));
+        inspectorControlOpacityTextView = opacityText;
+        bar.addView(opacityText);
+
+        Button opacityUpButton = new Button(this);
+        opacityUpButton.setText("+");
+        opacityUpButton.setOnClickListener(v -> setInspectorOpacityOnMain(inspectorOpacity + 0.08f));
+        bar.addView(opacityUpButton);
+
+        Button closeButton = new Button(this);
+        closeButton.setText("X");
+        closeButton.setOnClickListener(v -> removeInspectorControllerOnMain());
+        bar.addView(closeButton);
+        return bar;
+    }
+
+    private void updateInspectorControlButtonsOnMain() {
+        if (inspectorControlToggleButton != null) {
+            inspectorControlToggleButton.setText(inspectorRunning ? "Stop" : "Inspect");
+        }
+        if (inspectorControlRefreshButton != null) {
+            inspectorControlRefreshButton.setEnabled(inspectorRunning);
+        }
+        if (inspectorControlOpacityTextView != null) {
+            int percent = Math.round(inspectorOpacity * 100f);
+            inspectorControlOpacityTextView.setText(percent + "%");
+        }
+    }
+
+    private void startInspectorOnMain(int maxDepth) throws Exception {
+        ensureInspectorControllerOnMain();
+        if (inspectorWindowManager == null) {
+            inspectorWindowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+        }
+        if (inspectorWindowManager == null) {
+            throw new IllegalStateException("WindowManager unavailable");
+        }
+
+        if (inspectorBoundsView == null) {
+            inspectorBoundsView = new InspectorBoundsView(this);
+        }
+        if (inspectorPanelView == null) {
+            inspectorPanelView = buildInspectorPanelView();
+        }
+        if (inspectorBreadcrumbPanelView == null) {
+            inspectorBreadcrumbPanelView = buildInspectorBreadcrumbPanelView();
+        }
+
+        if (inspectorBoundsView.getParent() == null) {
+            WindowManager.LayoutParams overlayParams = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                            | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    PixelFormat.TRANSLUCENT
+            );
+            overlayParams.gravity = Gravity.TOP | Gravity.START;
+            overlayParams.setTitle("orb-eye-inspector-overlay");
+            inspectorWindowManager.addView(inspectorBoundsView, overlayParams);
+        }
+
+        if (inspectorPanelView.getParent() == null) {
+            if (inspectorPanelLayoutParams == null) {
+                int screenWidth = getResources().getDisplayMetrics().widthPixels;
+                int screenHeight = getResources().getDisplayMetrics().heightPixels;
+                int panelWidth = Math.min(dp(360), Math.max(dp(220), screenWidth - dp(24)));
+                int panelHeight = Math.min(dp(620), Math.max(dp(320), screenHeight - dp(120)));
+                inspectorPanelLayoutParams = new WindowManager.LayoutParams(
+                        panelWidth,
+                        panelHeight,
+                        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                                | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                        PixelFormat.TRANSLUCENT
+                );
+                inspectorPanelLayoutParams.gravity = Gravity.TOP | Gravity.START;
+                inspectorPanelLayoutParams.x = Math.max(dp(8), screenWidth - panelWidth - dp(8));
+                inspectorPanelLayoutParams.y = dp(120);
+                inspectorPanelLayoutParams.setTitle("orb-eye-inspector-panel");
+            }
+            inspectorWindowManager.addView(inspectorPanelView, inspectorPanelLayoutParams);
+        }
+        if (inspectorBreadcrumbPanelView.getParent() == null) {
+            if (inspectorBreadcrumbLayoutParams == null) {
+                int screenWidth = getResources().getDisplayMetrics().widthPixels;
+                int screenHeight = getResources().getDisplayMetrics().heightPixels;
+                int breadcrumbWidth = Math.max(dp(220), screenWidth - dp(16));
+                inspectorBreadcrumbLayoutParams = new WindowManager.LayoutParams(
+                        breadcrumbWidth,
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                                | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                        PixelFormat.TRANSLUCENT
+                );
+                inspectorBreadcrumbLayoutParams.gravity = Gravity.TOP | Gravity.START;
+                inspectorBreadcrumbLayoutParams.x = dp(8);
+                inspectorBreadcrumbLayoutParams.y = Math.max(dp(8), screenHeight - dp(120));
+                inspectorBreadcrumbLayoutParams.setTitle("orb-eye-inspector-breadcrumb");
+            }
+            inspectorWindowManager.addView(inspectorBreadcrumbPanelView, inspectorBreadcrumbLayoutParams);
+        }
+
+        inspectorRunning = true;
+        inspectorLastError = "";
+        setInspectorOpacityOnMain(inspectorOpacity);
+        refreshInspectorDataOnMain(maxDepth, true);
+        updateInspectorControlButtonsOnMain();
+    }
+
+    private void stopInspectorOnMain() {
+        if (inspectorWindowManager != null) {
+            if (inspectorPanelView != null && inspectorPanelView.getParent() != null) {
+                try {
+                    inspectorWindowManager.removeView(inspectorPanelView);
+                } catch (Exception ignored) {
+                    // ignore stale window reference
+                }
+            }
+            if (inspectorBreadcrumbPanelView != null && inspectorBreadcrumbPanelView.getParent() != null) {
+                try {
+                    inspectorWindowManager.removeView(inspectorBreadcrumbPanelView);
+                } catch (Exception ignored) {
+                    // ignore stale window reference
+                }
+            }
+            if (inspectorBoundsView != null && inspectorBoundsView.getParent() != null) {
+                try {
+                    inspectorWindowManager.removeView(inspectorBoundsView);
+                } catch (Exception ignored) {
+                    // ignore stale window reference
+                }
+            }
+        }
+        inspectorRunning = false;
+        inspectorSelectedNode = null;
+        inspectorRootNode = null;
+        inspectorAllNodes.clear();
+        inspectorVisibleNodes.clear();
+        updateInspectorParentButtonOnMain();
+        updateInspectorBreadcrumbOnMain(null);
+        updateInspectorControlButtonsOnMain();
+    }
+
+    private void shutdownInspector() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            stopInspectorOnMain();
+            removeInspectorControllerOnMain();
+            return;
+        }
+        CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                stopInspectorOnMain();
+                removeInspectorControllerOnMain();
+            } finally {
+                latch.countDown();
+            }
+        });
+        try {
+            latch.await(2, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private LinearLayout buildInspectorPanelView() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackgroundColor(0xEE10151A);
+        panel.setPadding(dp(8), dp(8), dp(8), dp(8));
+
+        TextView title = new TextView(this);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        title.setText("Orb Inspector  (drag)");
+        title.setPadding(dp(8), dp(8), dp(8), dp(8));
+        inspectorHeaderTextView = title;
+        final float[] panelStartTouch = new float[2];
+        final int[] panelStartPos = new int[2];
+        title.setOnTouchListener((v, event) -> {
+            if (inspectorPanelLayoutParams == null || inspectorWindowManager == null || inspectorPanelView == null) {
+                return false;
+            }
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    panelStartTouch[0] = event.getRawX();
+                    panelStartTouch[1] = event.getRawY();
+                    panelStartPos[0] = inspectorPanelLayoutParams.x;
+                    panelStartPos[1] = inspectorPanelLayoutParams.y;
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    inspectorPanelLayoutParams.x = panelStartPos[0] + (int) (event.getRawX() - panelStartTouch[0]);
+                    inspectorPanelLayoutParams.y = panelStartPos[1] + (int) (event.getRawY() - panelStartTouch[1]);
+                    inspectorPanelLayoutParams.x = Math.max(0, inspectorPanelLayoutParams.x);
+                    inspectorPanelLayoutParams.y = Math.max(0, inspectorPanelLayoutParams.y);
+                    inspectorWindowManager.updateViewLayout(inspectorPanelView, inspectorPanelLayoutParams);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    return true;
+                default:
+                    return false;
+            }
+        });
+
+        LinearLayout toolbar = new LinearLayout(this);
+        toolbar.setOrientation(LinearLayout.HORIZONTAL);
+        toolbar.setPadding(0, dp(6), 0, dp(6));
+
+        Button refreshButton = new Button(this);
+        refreshButton.setText("Refresh");
+        refreshButton.setOnClickListener(v -> {
+            try {
+                refreshInspectorDataOnMain(inspectorMaxDepth, true);
+            } catch (Exception e) {
+                inspectorLastError = e.getMessage() != null ? e.getMessage() : "refresh failed";
+                updateInspectorHeaderOnMain();
+            }
+        });
+
+        Button parentButton = new Button(this);
+        parentButton.setText("↑Parent");
+        parentButton.setOnClickListener(v -> {
+            if (inspectorSelectedNode != null && inspectorSelectedNode.parent != null) {
+                selectInspectorNodeOnMain(inspectorSelectedNode.parent, false);
+            }
+        });
+        inspectorParentButton = parentButton;
+
+        Button closeButton = new Button(this);
+        closeButton.setText("Close");
+        closeButton.setOnClickListener(v -> stopInspectorOnMain());
+
+        Button infoToggleButton = new Button(this);
+        infoToggleButton.setOnClickListener(v -> setInspectorInfoExpandedOnMain(!inspectorInfoExpanded));
+        inspectorInfoToggleButton = infoToggleButton;
+
+        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        toolbar.addView(parentButton, btnLp);
+        toolbar.addView(refreshButton, btnLp);
+        toolbar.addView(infoToggleButton, btnLp);
+        toolbar.addView(closeButton, btnLp);
+
+        ListView listView = new ListView(this);
+        listView.setDividerHeight(1);
+        listView.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
+        inspectorTreeListView = listView;
+
+        inspectorTreeAdapter = new InspectorTreeAdapter(this, inspectorVisibleNodes);
+        listView.setAdapter(inspectorTreeAdapter);
+        listView.setOnItemClickListener((parent, view, position, id) -> {
+            if (position < 0 || position >= inspectorVisibleNodes.size()) return;
+            selectInspectorNodeOnMain(inspectorVisibleNodes.get(position), false);
+        });
+        listView.setOnItemLongClickListener((parent, view, position, id) -> {
+            if (position < 0 || position >= inspectorVisibleNodes.size()) return true;
+            InspectorNode node = inspectorVisibleNodes.get(position);
+            if (node.children.isEmpty()) return true;
+            node.expanded = !node.expanded;
+            rebuildVisibleInspectorNodes();
+            if (inspectorTreeAdapter != null) inspectorTreeAdapter.notifyDataSetChanged();
+            selectInspectorNodeOnMain(node, false);
+            return true;
+        });
+
+        TextView info = new TextView(this);
+        info.setTextColor(0xFFE4E8EE);
+        info.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        info.setBackgroundColor(0xCC0B0F14);
+        info.setPadding(dp(8), dp(8), dp(8), dp(8));
+        info.setText("Tap node to select. Long press list node to collapse/expand.");
+        inspectorInfoTextView = info;
+
+        panel.addView(title, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        panel.addView(toolbar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        panel.addView(listView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        panel.addView(info, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(180)));
+        setInspectorInfoExpandedOnMain(inspectorInfoExpanded);
+        updateInspectorParentButtonOnMain();
+        return panel;
+    }
+
+    private LinearLayout buildInspectorBreadcrumbPanelView() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackgroundColor(0xDD10151A);
+        panel.setPadding(dp(8), dp(6), dp(8), dp(8));
+        panel.setClickable(true);
+        panel.setLongClickable(true);
+
+        TextView title = new TextView(this);
+        title.setText("Path (drag title to move, tap ancestor/child)");
+        title.setTextColor(0xFFDDE6F3);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        title.setPadding(dp(4), 0, dp(4), dp(4));
+        final float[] startTouch = new float[2];
+        final int[] startPos = new int[2];
+        title.setOnTouchListener((v, event) -> {
+            if (inspectorBreadcrumbLayoutParams == null
+                    || inspectorWindowManager == null
+                    || inspectorBreadcrumbPanelView == null) {
+                return false;
+            }
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    startTouch[0] = event.getRawX();
+                    startTouch[1] = event.getRawY();
+                    startPos[0] = inspectorBreadcrumbLayoutParams.x;
+                    startPos[1] = inspectorBreadcrumbLayoutParams.y;
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    int screenWidth = getResources().getDisplayMetrics().widthPixels;
+                    int screenHeight = getResources().getDisplayMetrics().heightPixels;
+                    int panelWidth = inspectorBreadcrumbPanelView.getWidth() > 0
+                            ? inspectorBreadcrumbPanelView.getWidth()
+                            : inspectorBreadcrumbLayoutParams.width;
+                    int panelHeight = inspectorBreadcrumbPanelView.getHeight() > 0
+                            ? inspectorBreadcrumbPanelView.getHeight()
+                            : dp(72);
+                    inspectorBreadcrumbLayoutParams.x = clampInt(
+                            startPos[0] + (int) (event.getRawX() - startTouch[0]),
+                            0,
+                            Math.max(0, screenWidth - panelWidth)
+                    );
+                    inspectorBreadcrumbLayoutParams.y = clampInt(
+                            startPos[1] + (int) (event.getRawY() - startTouch[1]),
+                            0,
+                            Math.max(0, screenHeight - panelHeight)
+                    );
+                    inspectorWindowManager.updateViewLayout(inspectorBreadcrumbPanelView, inspectorBreadcrumbLayoutParams);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    return true;
+                default:
+                    return false;
+            }
+        });
+
+        HorizontalScrollView scrollView = new HorizontalScrollView(this);
+        scrollView.setHorizontalScrollBarEnabled(false);
+        scrollView.setFillViewport(true);
+        inspectorBreadcrumbScrollView = scrollView;
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(dp(2), dp(2), dp(2), dp(2));
+        inspectorBreadcrumbContainer = row;
+
+        scrollView.addView(row, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        panel.addView(title, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        panel.addView(scrollView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        updateInspectorBreadcrumbOnMain(null);
+        return panel;
+    }
+
+    private void updateInspectorBreadcrumbOnMain(InspectorNode node) {
+        if (inspectorBreadcrumbContainer == null) return;
+        inspectorBreadcrumbContainer.removeAllViews();
+        if (node == null) {
+            TextView empty = new TextView(this);
+            empty.setText("No node selected");
+            empty.setTextColor(0xFF94A3B8);
+            empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            empty.setPadding(dp(6), dp(4), dp(6), dp(4));
+            inspectorBreadcrumbContainer.addView(empty);
+            return;
+        }
+
+        ArrayList<InspectorNode> chain = new ArrayList<>();
+        InspectorNode current = node;
+        while (current != null) {
+            chain.add(0, current);
+            current = current.parent;
+        }
+
+        for (int i = 0; i < chain.size(); i++) {
+            final InspectorNode item = chain.get(i);
+            TextView crumb = new TextView(this);
+            int levelColor = getInspectorLevelColor(item.depth);
+            boolean selected = item == node;
+            crumb.setText(getInspectorBreadcrumbLabel(item));
+            crumb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            crumb.setTextColor(0xFFF3F7FF);
+            crumb.setPadding(dp(8), dp(6), dp(8), dp(6));
+            crumb.setBackgroundColor(selected ? withAlpha(levelColor, 0xAA) : withAlpha(levelColor, 0x44));
+            crumb.setOnClickListener(v -> selectInspectorNodeOnMain(item, false));
+            inspectorBreadcrumbContainer.addView(crumb);
+
+            if (i < chain.size() - 1) {
+                TextView sep = new TextView(this);
+                sep.setText(" > ");
+                sep.setTextColor(0xFF8FA2B8);
+                sep.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+                sep.setPadding(dp(4), dp(6), dp(4), dp(6));
+                inspectorBreadcrumbContainer.addView(sep);
+            }
+        }
+
+        if (!node.children.isEmpty()) {
+            TextView split = new TextView(this);
+            split.setText("   | Sons(" + node.children.size() + ") ");
+            split.setTextColor(0xFF9FB3C8);
+            split.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            split.setPadding(dp(8), dp(6), dp(8), dp(6));
+            inspectorBreadcrumbContainer.addView(split);
+
+            for (int i = 0; i < node.children.size(); i++) {
+                final InspectorNode child = node.children.get(i);
+                TextView childCrumb = new TextView(this);
+                int childColor = getInspectorLevelColor(child.depth);
+                childCrumb.setText(getInspectorBreadcrumbLabel(child));
+                childCrumb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+                childCrumb.setTextColor(0xFFF3F7FF);
+                childCrumb.setPadding(dp(8), dp(6), dp(8), dp(6));
+                childCrumb.setBackgroundColor(withAlpha(childColor, 0x55));
+                childCrumb.setOnClickListener(v -> selectInspectorNodeOnMain(child, false));
+                inspectorBreadcrumbContainer.addView(childCrumb);
+
+                if (i < node.children.size() - 1) {
+                    TextView sep = new TextView(this);
+                    sep.setText(" ");
+                    sep.setTextColor(0xFF8FA2B8);
+                    sep.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+                    sep.setPadding(dp(2), dp(6), dp(2), dp(6));
+                    inspectorBreadcrumbContainer.addView(sep);
+                }
+            }
+        }
+
+        if (inspectorBreadcrumbScrollView != null) {
+            inspectorBreadcrumbScrollView.post(() -> inspectorBreadcrumbScrollView.fullScroll(View.FOCUS_RIGHT));
+        }
+    }
+
+    private String getInspectorBreadcrumbLabel(InspectorNode node) {
+        if (node == null) return "";
+        String className = simplifyInspectorClassName(node.className);
+        if (className == null || className.isEmpty()) {
+            className = "node";
+        }
+
+        String shortId = "";
+        if (node.id != null && !node.id.isEmpty()) {
+            int slash = node.id.lastIndexOf('/');
+            shortId = slash >= 0 && slash + 1 < node.id.length() ? node.id.substring(slash + 1) : node.id;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(node.depth).append(" ");
+        if (node.depth == 0) {
+            sb.append("ROOT");
+        } else {
+            sb.append(className);
+            if (node.indexInParent >= 0) {
+                sb.append("[").append(node.indexInParent).append("]");
+            }
+        }
+        if (!shortId.isEmpty()) {
+            sb.append("#").append(shortenInspectorText(shortId, 12));
+        }
+        return shortenInspectorText(sb.toString(), 28);
+    }
+
+    private void setInspectorInfoExpandedOnMain(boolean expanded) {
+        inspectorInfoExpanded = expanded;
+        if (inspectorInfoTextView != null) {
+            inspectorInfoTextView.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        }
+        if (inspectorInfoToggleButton != null) {
+            inspectorInfoToggleButton.setText(expanded ? "Info -" : "Info +");
+        }
+    }
+
+    private void updateInspectorParentButtonOnMain() {
+        if (inspectorParentButton == null) return;
+        boolean canGoParent = inspectorSelectedNode != null && inspectorSelectedNode.parent != null;
+        inspectorParentButton.setEnabled(canGoParent);
+    }
+
+    private void refreshInspectorDataOnMain(int maxDepth, boolean keepSelection) throws Exception {
+        inspectorLastError = "";
+        Map<String, Boolean> expandedState = new HashMap<>();
+        for (InspectorNode node : inspectorAllNodes) {
+            expandedState.put(node.path, node.expanded);
+        }
+
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) {
+            inspectorLastError = "No active window";
+            inspectorRootNode = null;
+            inspectorAllNodes.clear();
+            inspectorVisibleNodes.clear();
+            inspectorSelectedNode = null;
+            if (inspectorBoundsView != null) {
+                inspectorBoundsView.setNodes(Collections.emptyList());
+            }
+            if (inspectorTreeAdapter != null) inspectorTreeAdapter.notifyDataSetChanged();
+            if (inspectorInfoTextView != null) inspectorInfoTextView.setText("No active window.");
+            updateInspectorParentButtonOnMain();
+            updateInspectorBreadcrumbOnMain(null);
+            updateInspectorHeaderOnMain();
+            return;
+        }
+
+        String selectedPath = keepSelection && inspectorSelectedNode != null
+                ? inspectorSelectedNode.path
+                : null;
+
+        try {
+            InspectorNode rootNode = captureInspectorNode(root, null, 0, -1, "0", maxDepth);
+            applyExpansionState(rootNode, expandedState);
+            inspectorRootNode = rootNode;
+            inspectorAllNodes.clear();
+            flattenInspectorNodes(rootNode, inspectorAllNodes);
+            rebuildVisibleInspectorNodes();
+
+            if (inspectorBoundsView != null) {
+                inspectorBoundsView.setNodes(inspectorAllNodes);
+            }
+
+            if (selectedPath != null) {
+                inspectorSelectedNode = findInspectorNodeByPath(selectedPath);
+            }
+            if (inspectorSelectedNode == null && !inspectorAllNodes.isEmpty()) {
+                inspectorSelectedNode = inspectorAllNodes.get(0);
+            }
+
+            if (inspectorTreeAdapter != null) inspectorTreeAdapter.notifyDataSetChanged();
+            selectInspectorNodeOnMain(inspectorSelectedNode, true);
+            updateInspectorHeaderOnMain();
+        } finally {
+            root.recycle();
+        }
+    }
+
+    private InspectorNode captureInspectorNode(
+            AccessibilityNodeInfo node,
+            InspectorNode parent,
+            int depth,
+            int indexInParent,
+            String path,
+            int maxDepth
+    ) {
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+
+        InspectorNode out = new InspectorNode(
+                parent,
+                path,
+                depth,
+                indexInParent,
+                node.getClassName() != null ? node.getClassName().toString() : "",
+                node.getViewIdResourceName() != null ? node.getViewIdResourceName() : "",
+                node.getText() != null ? node.getText().toString() : "",
+                node.getContentDescription() != null ? node.getContentDescription().toString() : "",
+                node.getPackageName() != null ? node.getPackageName().toString() : "",
+                bounds,
+                node.isClickable(),
+                node.isLongClickable(),
+                node.isScrollable(),
+                node.isEditable(),
+                node.isEnabled(),
+                node.isVisibleToUser()
+        );
+
+        if (depth >= maxDepth) return out;
+        int childCount = node.getChildCount();
+        for (int i = 0; i < childCount; i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child == null) continue;
+            try {
+                InspectorNode childNode = captureInspectorNode(child, out, depth + 1, i, path + "." + i, maxDepth);
+                out.children.add(childNode);
+            } finally {
+                child.recycle();
+            }
+        }
+        return out;
+    }
+
+    private void flattenInspectorNodes(InspectorNode node, List<InspectorNode> out) {
+        if (node == null) return;
+        out.add(node);
+        for (InspectorNode child : node.children) {
+            flattenInspectorNodes(child, out);
+        }
+    }
+
+    private void applyExpansionState(InspectorNode node, Map<String, Boolean> stateByPath) {
+        if (node == null) return;
+        if (stateByPath != null) {
+            Boolean expanded = stateByPath.get(node.path);
+            node.expanded = expanded == null || expanded;
+        } else {
+            node.expanded = true;
+        }
+        for (InspectorNode child : node.children) {
+            applyExpansionState(child, stateByPath);
+        }
+    }
+
+    private void rebuildVisibleInspectorNodes() {
+        inspectorVisibleNodes.clear();
+        appendVisibleInspectorNodes(inspectorRootNode, inspectorVisibleNodes);
+    }
+
+    private void appendVisibleInspectorNodes(InspectorNode node, List<InspectorNode> out) {
+        if (node == null) return;
+        out.add(node);
+        if (!node.expanded) return;
+        for (InspectorNode child : node.children) {
+            appendVisibleInspectorNodes(child, out);
+        }
+    }
+
+    private void ensureInspectorNodeVisibleOnTree(InspectorNode node) {
+        if (node == null) return;
+        boolean changed = false;
+        InspectorNode current = node.parent;
+        while (current != null) {
+            if (!current.expanded) {
+                current.expanded = true;
+                changed = true;
+            }
+            current = current.parent;
+        }
+        if (changed) {
+            rebuildVisibleInspectorNodes();
+        }
+    }
+
+    private InspectorNode findInspectorNodeByPath(String path) {
+        if (path == null || path.isEmpty()) return null;
+        for (InspectorNode node : inspectorAllNodes) {
+            if (path.equals(node.path)) return node;
+        }
+        return null;
+    }
+
+    private void selectInspectorNodeOnMain(InspectorNode node, boolean fromOverlay) {
+        inspectorSelectedNode = node;
+        updateInspectorParentButtonOnMain();
+        ensureInspectorNodeVisibleOnTree(node);
+        if (inspectorBoundsView != null) {
+            inspectorBoundsView.setSelectedNode(node);
+        }
+        if (inspectorTreeAdapter != null) {
+            inspectorTreeAdapter.notifyDataSetChanged();
+        }
+        if (inspectorTreeListView != null) {
+            int idx = node != null ? inspectorVisibleNodes.indexOf(node) : -1;
+            if (idx >= 0) {
+                inspectorTreeListView.setItemChecked(idx, true);
+                if (fromOverlay) {
+                    inspectorTreeListView.smoothScrollToPosition(idx);
+                }
+            } else {
+                inspectorTreeListView.clearChoices();
+            }
+        }
+        updateInspectorBreadcrumbOnMain(node);
+        updateInspectorInfoOnMain(node);
+    }
+
+    private void updateInspectorInfoOnMain(InspectorNode node) {
+        if (inspectorInfoTextView == null) return;
+        if (node == null) {
+            inspectorInfoTextView.setText("No node selected.");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("path=").append(node.path).append('\n');
+        sb.append("class=").append(node.className).append('\n');
+        sb.append("id=").append(node.id).append('\n');
+        sb.append("text=").append(node.text).append('\n');
+        sb.append("desc=").append(node.desc).append('\n');
+        sb.append("pkg=").append(node.pkg).append('\n');
+        sb.append("bounds=").append(node.bounds.flattenToString()).append('\n');
+        sb.append("depth=").append(node.depth)
+                .append(", index=").append(node.indexInParent)
+                .append(", childCount=").append(node.children.size())
+                .append(", siblingCount=").append(node.getSiblingCount())
+                .append(", expanded=").append(node.expanded).append('\n');
+        sb.append("flags: ");
+        if (node.clickable) sb.append("clickable ");
+        if (node.longClickable) sb.append("longClickable ");
+        if (node.scrollable) sb.append("scrollable ");
+        if (node.editable) sb.append("editable ");
+        if (node.enabled) sb.append("enabled ");
+        if (node.visibleToUser) sb.append("visibleToUser ");
+        inspectorInfoTextView.setText(sb.toString().trim());
+    }
+
+    private void updateInspectorHeaderOnMain() {
+        if (inspectorHeaderTextView == null) return;
+        String pkg = inspectorRootNode != null ? inspectorRootNode.pkg : lastWindowPackage;
+        int totalCount = inspectorAllNodes.size();
+        int visibleCount = inspectorVisibleNodes.size();
+        StringBuilder sb = new StringBuilder();
+        sb.append("Orb Inspector");
+        if (pkg != null && !pkg.isEmpty()) sb.append("  ").append(pkg);
+        sb.append("  nodes=").append(visibleCount).append("/").append(totalCount);
+        sb.append("  opacity=").append(Math.round(inspectorOpacity * 100f)).append("%");
+        if (inspectorLastError != null && !inspectorLastError.isEmpty()) {
+            sb.append("\nerr: ").append(inspectorLastError);
+        }
+        inspectorHeaderTextView.setText(sb.toString());
+    }
+
+    private JSONObject buildInspectorStateJsonOnMain() throws Exception {
+        JSONObject out = new JSONObject();
+        out.put("ok", true);
+        out.put("running", inspectorRunning);
+        out.put("count", inspectorAllNodes.size());
+        out.put("visibleCount", inspectorVisibleNodes.size());
+        out.put("maxDepth", inspectorMaxDepth);
+        out.put("opacity", (double) inspectorOpacity);
+        out.put("package", inspectorRootNode != null ? inspectorRootNode.pkg : lastWindowPackage);
+        out.put("controllerVisible", inspectorControlView != null && inspectorControlView.getParent() != null);
+        out.put("infoExpanded", inspectorInfoExpanded);
+        if (inspectorSelectedNode != null) {
+            JSONObject selected = new JSONObject();
+            selected.put("path", inspectorSelectedNode.path);
+            selected.put("class", inspectorSelectedNode.className);
+            selected.put("id", inspectorSelectedNode.id);
+            selected.put("text", inspectorSelectedNode.text);
+            selected.put("desc", inspectorSelectedNode.desc);
+            selected.put("bounds", inspectorSelectedNode.bounds.flattenToString());
+            selected.put("depth", inspectorSelectedNode.depth);
+            selected.put("childCount", inspectorSelectedNode.children.size());
+            selected.put("siblingCount", inspectorSelectedNode.getSiblingCount());
+            selected.put("expanded", inspectorSelectedNode.expanded);
+            out.put("selected", selected);
+        }
+        if (inspectorLastError != null && !inspectorLastError.isEmpty()) {
+            out.put("lastError", inspectorLastError);
+        }
+        return out;
+    }
+
+    private int dp(int dip) {
+        return (int) TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP,
+                dip,
+                getResources().getDisplayMetrics()
+        );
+    }
+
+    private String simplifyInspectorClassName(String className) {
+        if (className == null) return "";
+        String simplified = className;
+        String[] prefixes = new String[]{"android.widget.", "android.view.", "androidx."};
+        for (String prefix : prefixes) {
+            if (simplified.startsWith(prefix)) {
+                simplified = simplified.substring(prefix.length());
+                break;
+            }
+        }
+        return simplified;
+    }
+
+    private String shortenInspectorText(String text, int maxLen) {
+        if (text == null) return "";
+        String normalized = text.replace('\n', ' ').trim();
+        if (normalized.length() <= maxLen) return normalized;
+        return normalized.substring(0, Math.max(0, maxLen - 3)) + "...";
+    }
+
+    private int getInspectorLevelColor(int depth) {
+        int idx = Math.abs(depth) % INSPECTOR_LEVEL_COLORS.length;
+        return INSPECTOR_LEVEL_COLORS[idx];
+    }
+
+    private int withAlpha(int color, int alpha) {
+        return (clampInt(alpha, 0, 255) << 24) | (color & 0x00FFFFFF);
+    }
+
+    private static class InspectorNode {
+        final InspectorNode parent;
+        final String path;
+        final int depth;
+        final int indexInParent;
+        final String className;
+        final String id;
+        final String text;
+        final String desc;
+        final String pkg;
+        final Rect bounds;
+        final boolean clickable;
+        final boolean longClickable;
+        final boolean scrollable;
+        final boolean editable;
+        final boolean enabled;
+        final boolean visibleToUser;
+        boolean expanded = true;
+        final List<InspectorNode> children = new ArrayList<>();
+
+        InspectorNode(
+                InspectorNode parent,
+                String path,
+                int depth,
+                int indexInParent,
+                String className,
+                String id,
+                String text,
+                String desc,
+                String pkg,
+                Rect bounds,
+                boolean clickable,
+                boolean longClickable,
+                boolean scrollable,
+                boolean editable,
+                boolean enabled,
+                boolean visibleToUser
+        ) {
+            this.parent = parent;
+            this.path = path;
+            this.depth = depth;
+            this.indexInParent = indexInParent;
+            this.className = className;
+            this.id = id;
+            this.text = text;
+            this.desc = desc;
+            this.pkg = pkg;
+            this.bounds = new Rect(bounds);
+            this.clickable = clickable;
+            this.longClickable = longClickable;
+            this.scrollable = scrollable;
+            this.editable = editable;
+            this.enabled = enabled;
+            this.visibleToUser = visibleToUser;
+        }
+
+        int getSiblingCount() {
+            if (parent == null) return 0;
+            return Math.max(0, parent.children.size() - 1);
+        }
+    }
+
+    private class InspectorTreeAdapter extends ArrayAdapter<InspectorNode> {
+        InspectorTreeAdapter(Context context, List<InspectorNode> nodes) {
+            super(context, android.R.layout.simple_list_item_1, nodes);
+        }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            TextView tv = (TextView) super.getView(position, convertView, parent);
+            InspectorNode node = getItem(position);
+            if (node == null) return tv;
+
+            String marker = node == inspectorSelectedNode ? "> " : "  ";
+            StringBuilder row = new StringBuilder();
+            row.append(marker);
+            row.append(node.depth).append(" ");
+            for (int i = 0; i < Math.min(node.depth, 12); i++) row.append("  ");
+            if (!node.children.isEmpty()) {
+                row.append(node.expanded ? "[-] " : "[+] ");
+            } else {
+                row.append("    ");
+            }
+            row.append(simplifyInspectorClassName(node.className));
+
+            String primary = !node.text.isEmpty() ? node.text : (!node.desc.isEmpty() ? node.desc : node.id);
+            if (!primary.isEmpty()) {
+                row.append("  ").append(shortenInspectorText(primary, 16));
+            }
+            row.append(" {ch=").append(node.children.size())
+                    .append(",sb=").append(node.getSiblingCount()).append("}");
+
+            if (node.clickable) row.append(" [C]");
+            if (node.scrollable) row.append(" [S]");
+            if (node.editable) row.append(" [E]");
+
+            int levelColor = getInspectorLevelColor(node.depth);
+            tv.setText(row.toString());
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            tv.setTextColor(levelColor);
+            tv.setPadding(dp(6), dp(6), dp(6), dp(6));
+            tv.setBackgroundColor(node == inspectorSelectedNode ? withAlpha(levelColor, 0x33) : Color.TRANSPARENT);
+            return tv;
+        }
+    }
+
+    private class InspectorBoundsView extends View {
+        private final Paint nodePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint selectedOuterPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint selectedInnerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint selectedFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint selectedCornerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private List<InspectorNode> nodes = Collections.emptyList();
+        private InspectorNode selectedNode;
+        private float overlayOpacity = 0.88f;
+        private float pulsePhase = 0f;
+        private boolean pulseRunning = false;
+        private final Runnable pulseRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (!pulseRunning) return;
+                pulsePhase += 0.18f;
+                if (pulsePhase >= (float) (Math.PI * 2)) {
+                    pulsePhase -= (float) (Math.PI * 2);
+                }
+                if (selectedNode != null) {
+                    invalidate();
+                }
+                postOnAnimation(this);
+            }
+        };
+
+        InspectorBoundsView(Context context) {
+            super(context);
+            setWillNotDraw(false);
+            nodePaint.setStyle(Paint.Style.STROKE);
+            nodePaint.setStrokeWidth(2f);
+
+            selectedOuterPaint.setStyle(Paint.Style.STROKE);
+            selectedOuterPaint.setStrokeWidth(5f);
+
+            selectedInnerPaint.setStyle(Paint.Style.STROKE);
+            selectedInnerPaint.setStrokeWidth(3f);
+
+            selectedFillPaint.setStyle(Paint.Style.FILL);
+
+            selectedCornerPaint.setStyle(Paint.Style.STROKE);
+            selectedCornerPaint.setStrokeWidth(6f);
+            selectedCornerPaint.setStrokeCap(Paint.Cap.ROUND);
+            setOverlayOpacity(inspectorOpacity);
+        }
+
+        void setNodes(List<InspectorNode> newNodes) {
+            nodes = newNodes != null ? newNodes : Collections.emptyList();
+            invalidate();
+        }
+
+        void setSelectedNode(InspectorNode node) {
+            selectedNode = node;
+            if (selectedNode == null) {
+                pulsePhase = 0f;
+            }
+            invalidate();
+        }
+
+        void setOverlayOpacity(float opacity) {
+            overlayOpacity = clampFloat(opacity, 0.20f, 1.0f);
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            for (InspectorNode node : nodes) {
+                if (node.bounds.width() <= 0 || node.bounds.height() <= 0) continue;
+                int color = getInspectorLevelColor(node.depth);
+                nodePaint.setColor(withAlpha(color, Math.round(0xC0 * overlayOpacity)));
+                canvas.drawRect(node.bounds, nodePaint);
+            }
+            if (selectedNode != null && selectedNode.bounds.width() > 0 && selectedNode.bounds.height() > 0) {
+                int selectedColor = getInspectorLevelColor(selectedNode.depth);
+                Rect selectedBounds = selectedNode.bounds;
+                float pulse = 0.5f + 0.5f * (float) Math.sin(pulsePhase);
+                int fillAlpha = Math.round((0x2A + (0x2A * pulse)) * overlayOpacity);
+                int outerAlpha = Math.round((0xA0 + (0x5F * pulse)) * overlayOpacity);
+                int innerAlpha = Math.round((0xA0 + (0x5F * pulse)) * overlayOpacity);
+                int cornerAlpha = Math.round((0x90 + (0x6F * pulse)) * overlayOpacity);
+                selectedOuterPaint.setStrokeWidth(4f + (2f * pulse));
+                selectedInnerPaint.setStrokeWidth(2f + (2f * pulse));
+                selectedCornerPaint.setStrokeWidth(5f + (2f * pulse));
+
+                selectedFillPaint.setColor(withAlpha(selectedColor, fillAlpha));
+                canvas.drawRect(selectedBounds, selectedFillPaint);
+
+                selectedOuterPaint.setColor(withAlpha(0xFFFFFFFF, outerAlpha));
+                canvas.drawRect(selectedBounds, selectedOuterPaint);
+
+                Rect inner = new Rect(selectedBounds);
+                inner.inset(dp(2), dp(2));
+                if (inner.width() > 0 && inner.height() > 0) {
+                    selectedInnerPaint.setColor(withAlpha(selectedColor, innerAlpha));
+                    canvas.drawRect(inner, selectedInnerPaint);
+                }
+
+                drawSelectionCorners(canvas, selectedBounds, cornerAlpha, pulse);
+            }
+        }
+
+        private void drawSelectionCorners(Canvas canvas, Rect bounds, int alpha, float pulse) {
+            int base = clampInt(Math.min(bounds.width(), bounds.height()) / 4, dp(10), dp(24));
+            int corner = clampInt(base + Math.round(dp(4) * pulse), dp(10), dp(32));
+            selectedCornerPaint.setColor(withAlpha(0xFFFFFFFF, alpha));
+
+            // top-left
+            canvas.drawLine(bounds.left, bounds.top, bounds.left + corner, bounds.top, selectedCornerPaint);
+            canvas.drawLine(bounds.left, bounds.top, bounds.left, bounds.top + corner, selectedCornerPaint);
+            // top-right
+            canvas.drawLine(bounds.right, bounds.top, bounds.right - corner, bounds.top, selectedCornerPaint);
+            canvas.drawLine(bounds.right, bounds.top, bounds.right, bounds.top + corner, selectedCornerPaint);
+            // bottom-left
+            canvas.drawLine(bounds.left, bounds.bottom, bounds.left + corner, bounds.bottom, selectedCornerPaint);
+            canvas.drawLine(bounds.left, bounds.bottom, bounds.left, bounds.bottom - corner, selectedCornerPaint);
+            // bottom-right
+            canvas.drawLine(bounds.right, bounds.bottom, bounds.right - corner, bounds.bottom, selectedCornerPaint);
+            canvas.drawLine(bounds.right, bounds.bottom, bounds.right, bounds.bottom - corner, selectedCornerPaint);
+        }
+
+        @Override
+        protected void onAttachedToWindow() {
+            super.onAttachedToWindow();
+            if (!pulseRunning) {
+                pulseRunning = true;
+                postOnAnimation(pulseRunnable);
+            }
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            pulseRunning = false;
+            removeCallbacks(pulseRunnable);
+            super.onDetachedFromWindow();
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            int action = event.getActionMasked();
+            if (action != MotionEvent.ACTION_DOWN
+                    && action != MotionEvent.ACTION_MOVE
+                    && action != MotionEvent.ACTION_UP) {
+                return false;
+            }
+            InspectorNode hit = findSmallestNodeAt((int) event.getRawX(), (int) event.getRawY());
+            if (hit == null) {
+                return true;
+            }
+            selectedNode = hit;
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_DOWN) {
+                selectInspectorNodeOnMain(hit, true);
+            } else {
+                invalidate();
+            }
+            return true;
+        }
+
+        private InspectorNode findSmallestNodeAt(int x, int y) {
+            InspectorNode best = null;
+            long bestArea = Long.MAX_VALUE;
+            for (InspectorNode node : nodes) {
+                if (!node.bounds.contains(x, y)) continue;
+                long area = Math.max(1, (long) node.bounds.width() * (long) node.bounds.height());
+                if (area <= bestArea) {
+                    bestArea = area;
+                    best = node;
+                }
+            }
+            return best;
+        }
     }
 
     // ===== Screen Elements (v2.1 enhanced) =====
