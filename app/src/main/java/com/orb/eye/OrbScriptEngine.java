@@ -44,6 +44,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * <pre>
  * // Reading
  * getScreen()           → [{text, desc, centerX, centerY, clickable, ...}, ...]
+ * getTree([query])      → nested UI tree JSON object
+ * getInspect([query])   → {ok, count, nodes:[...]} flattened hierarchy for analysis
  * getInfo()             → {package, activity}
  * findText(text)        → {centerX, centerY, ...} or null
  * hasText(text)         → boolean
@@ -81,7 +83,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * </pre>
  */
 public class OrbScriptEngine {
-    static final String VERSION = "2.7";
+    static final String VERSION = "2.8";
     private static final String TAG = "OrbEye.JS";
     private final OrbAccessibilityService svc;
     // Track active script threads by execution id so /stopjs can target one script.
@@ -446,6 +448,19 @@ public class OrbScriptEngine {
         "var ORB_EYE_VERSION = '" + VERSION + "';\n" +
         // Reading
         "function getScreen() { return JSON.parse(_orb.getScreen()); }\n" +
+        "function getTree(query) { return JSON.parse(_orb.getTree(query || '')); }\n" +
+        "function getInspect(opts) {\n" +
+        "  if (opts === undefined || opts === null) return JSON.parse(_orb.getInspect(''));\n" +
+        "  if (typeof opts === 'string') return JSON.parse(_orb.getInspect(opts));\n" +
+        "  var q = [];\n" +
+        "  for (var k in opts) {\n" +
+        "    if (!Object.prototype.hasOwnProperty.call(opts, k)) continue;\n" +
+        "    var v = opts[k];\n" +
+        "    if (v === undefined || v === null) continue;\n" +
+        "    q.push(encodeURIComponent(String(k)) + '=' + encodeURIComponent(String(v)));\n" +
+        "  }\n" +
+        "  return JSON.parse(_orb.getInspect(q.join('&')));\n" +
+        "}\n" +
         "function getInfo() { return JSON.parse(_orb.getInfo()); }\n" +
         "function findText(t) { var r = _orb.findText(t); return r ? JSON.parse(r) : null; }\n" +
         "function hasText(t) { return _orb.hasText(t); }\n" +
@@ -541,6 +556,30 @@ public class OrbScriptEngine {
             } catch (Exception e) {
                 Log.e(TAG, "getScreen error: " + e.getMessage());
                 return "[]";
+            }
+        }
+
+        public String getTree() {
+            return getTree("");
+        }
+
+        public String getTree(String query) {
+            try {
+                return svc.getUiTree(query != null ? query : "");
+            } catch (Exception e) {
+                return "{\"ok\":false,\"error\":\"getTree failed\",\"code\":\"INTERNAL_ERROR\"}";
+            }
+        }
+
+        public String getInspect() {
+            return getInspect("");
+        }
+
+        public String getInspect(String query) {
+            try {
+                return svc.getUiInspect(query != null ? query : "");
+            } catch (Exception e) {
+                return "{\"ok\":false,\"error\":\"getInspect failed\",\"code\":\"INTERNAL_ERROR\"}";
             }
         }
 

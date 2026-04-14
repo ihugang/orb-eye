@@ -4,11 +4,13 @@ import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.app.Notification;
 import android.content.ClipData;
+import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Path;
+import android.graphics.Point;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
@@ -25,6 +27,8 @@ import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.Text;
 import com.google.mlkit.vision.text.TextRecognition;
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
+import com.litongjava.android.paddle.ocr.OcrResultModel;
+import com.litongjava.android.paddle.ocr.Predictor;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -40,19 +44,29 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Queue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class OrbAccessibilityService extends AccessibilityService {
     private static final String TAG = "OrbEye";
     private static final int PORT = 7333;
     private static final int MAX_NOTIFICATIONS = 50;
+    private static final String OCR_ENGINE_AUTO = "auto";
+    private static final String OCR_ENGINE_MLKIT = "mlkit";
+    private static final String OCR_ENGINE_PADDLE = "paddle";
+    private static final int OCR_MIN_TOKEN_SIZE_PX = 1;
 
     private ServerSocket serverSocket;
     private Thread serverThread;
+    private ExecutorService fastPool; // lightweight: ping, screen, tap, click, clipboard, etc.
+    private ExecutorService ocrPool;  // heavyweight: /ocr, /ocr-screen (CPU-bound, slow)
 
     // ===== Notification buffer =====
     private final CopyOnWriteArrayList<JSONObject> notificationBuffer = new CopyOnWriteArrayList<>();
@@ -61,6 +75,9 @@ public class OrbAccessibilityService extends AccessibilityService {
     volatile CountDownLatch uiChangeLatch = new CountDownLatch(1);
     volatile String lastWindowPackage = "";
     volatile String lastWindowClass = "";
+    private final Object paddleLock = new Object();
+    private Predictor paddlePredictor;
+    private String paddleInitError = "";
 
     @Override
     public void onServiceConnected() {
@@ -140,18 +157,31 @@ public class OrbAccessibilityService extends AccessibilityService {
     public void onDestroy() {
         super.onDestroy();
         stopHttpServer();
+        releasePaddlePredictor();
     }
 
     // ===== HTTP Server =====
 
+    private static boolean isOcrRoute(String route) {
+        return "/ocr".equals(route) || "/ocr-screen".equals(route);
+    }
+
     private void startHttpServer() {
+        // Fast pool: handles all lightweight requests (ping/info/screen/tap/click/clipboard…).
+        // Must never be blocked by OCR — kept at 8 threads so concurrent non-OCR calls stay responsive.
+        fastPool = Executors.newFixedThreadPool(8);
+        // OCR pool: CPU-bound screenshot+recognition, can take 5-30 s each.
+        // Kept small (2) to limit memory pressure; fast pool never waits on it.
+        ocrPool = Executors.newFixedThreadPool(2);
         serverThread = new Thread(() -> {
             try {
                 serverSocket = new ServerSocket(PORT);
                 Log.i(TAG, "HTTP server listening on port " + PORT);
                 while (!Thread.interrupted()) {
                     Socket client = serverSocket.accept();
-                    new Thread(() -> handleRequest(client)).start();
+                    // Read the request line in the fast pool to determine the route,
+                    // then hand off to ocrPool for OCR routes so fast threads stay free.
+                    fastPool.execute(() -> dispatchRequest(client));
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Server error: " + e.getMessage());
@@ -161,8 +191,30 @@ public class OrbAccessibilityService extends AccessibilityService {
         serverThread.start();
     }
 
+    private void dispatchRequest(Socket client) {
+        try {
+            BufferedReader reader = new BufferedReader(new InputStreamReader(client.getInputStream()));
+            String requestLine = reader.readLine();
+            if (requestLine == null) { client.close(); return; }
+            String[] parts = requestLine.split(" ");
+            String path = parts.length > 1 ? parts[1] : "/";
+            String route = path.contains("?") ? path.substring(0, path.indexOf("?")) : path;
+            if (isOcrRoute(route)) {
+                // Hand off to OCR pool; this fast-pool thread is freed immediately.
+                ocrPool.execute(() -> handleRequestFrom(client, reader, requestLine));
+            } else {
+                handleRequestFrom(client, reader, requestLine);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Dispatch error: " + e.getMessage());
+            try { client.close(); } catch (Exception ignored) {}
+        }
+    }
+
     private void stopHttpServer() {
         try {
+            if (fastPool != null) fastPool.shutdownNow();
+            if (ocrPool != null) ocrPool.shutdownNow();
             if (serverSocket != null) serverSocket.close();
             if (serverThread != null) serverThread.interrupt();
         } catch (Exception e) {
@@ -170,12 +222,9 @@ public class OrbAccessibilityService extends AccessibilityService {
         }
     }
 
-    private void handleRequest(Socket client) {
+    private void handleRequestFrom(Socket client, BufferedReader reader, String requestLine) {
         try {
-            BufferedReader reader = new BufferedReader(new InputStreamReader(client.getInputStream()));
-            String requestLine = reader.readLine();
-            if (requestLine == null) { client.close(); return; }
-
+            // requestLine and reader are pre-supplied by dispatchRequest.
             String line;
             int contentLength = 0;
             while ((line = reader.readLine()) != null && !line.isEmpty()) {
@@ -253,6 +302,9 @@ public class OrbAccessibilityService extends AccessibilityService {
 
             case "/tree":
                 return getUiTree(query);
+
+            case "/inspect":
+                return getUiInspect(query);
 
             case "/screen":
                 return getScreenElements(query);
@@ -332,6 +384,9 @@ public class OrbAccessibilityService extends AccessibilityService {
 
             case "/gesture":
                 return handleGesture(new JSONObject(body));
+
+            case "/wait-text":
+                return handleWaitText(new JSONObject(body));
 
             case "/exec":
                 return handleExec(parseExecBody(body, query));
@@ -582,7 +637,8 @@ public class OrbAccessibilityService extends AccessibilityService {
         Bitmap source = captureScreenshotBitmap();
         if (source == null) return "[]";
         try {
-            List<OcrLineData> lines = runOcr(source);
+            OcrRunResult ocrResult = runOcrWithEngine(source, OCR_ENGINE_AUTO);
+            List<OcrLineData> lines = ocrResult.lines;
             JSONArray arr = new JSONArray();
             for (OcrLineData line : lines) {
                 arr.put(lineToJson(line, 0, 0));
@@ -597,7 +653,8 @@ public class OrbAccessibilityService extends AccessibilityService {
         Bitmap source = captureScreenshotBitmap();
         if (source == null) return null;
         try {
-            List<OcrLineData> lines = runOcr(source);
+            OcrRunResult ocrResult = runOcrWithEngine(source, OCR_ENGINE_AUTO);
+            List<OcrLineData> lines = ocrResult.lines;
             for (OcrLineData line : lines) {
                 if (line.text != null && line.text.contains(text)) {
                     return lineToJson(line, 0, 0).toString();
@@ -750,6 +807,82 @@ public class OrbAccessibilityService extends AccessibilityService {
         return result.toString();
     }
 
+    // ===== Wait for specific text (v2.8) =====
+
+    /**
+     * POST /wait-text
+     * Body: {"text":"支付成功", "timeout":5000, "contains":true, "interval":500}
+     * Blocks until the specified text appears in the UI tree or timeout.
+     */
+    private String handleWaitText(JSONObject body) throws Exception {
+        String text = body.optString("text", "");
+        if (text.isEmpty()) {
+            return errorJson("Provide 'text' field", "INVALID_ARGS");
+        }
+        long timeoutMs = body.optLong("timeout", 5000);
+        boolean contains = body.optBoolean("contains", true);
+        long intervalMs = body.optLong("interval", 500);
+
+        long startTime = System.currentTimeMillis();
+        long deadline = startTime + timeoutMs;
+        int attempts = 0;
+
+        while (System.currentTimeMillis() < deadline) {
+            attempts++;
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root != null) {
+                boolean found = searchTextInTree(root, text, contains);
+                root.recycle();
+                if (found) {
+                    JSONObject result = new JSONObject();
+                    result.put("ok", true);
+                    result.put("found", true);
+                    result.put("text", text);
+                    result.put("attempts", attempts);
+                    result.put("elapsedMs", System.currentTimeMillis() - startTime);
+                    return result.toString();
+                }
+            }
+            long remaining = deadline - System.currentTimeMillis();
+            if (remaining <= 0) break;
+            Thread.sleep(Math.min(intervalMs, remaining));
+        }
+
+        JSONObject result = new JSONObject();
+        result.put("ok", true);
+        result.put("found", false);
+        result.put("text", text);
+        result.put("attempts", attempts);
+        result.put("elapsedMs", System.currentTimeMillis() - startTime);
+        result.put("timeoutMs", timeoutMs);
+        return result.toString();
+    }
+
+    private boolean searchTextInTree(AccessibilityNodeInfo node, String text, boolean contains) {
+        if (node == null) return false;
+        CharSequence nodeText = node.getText();
+        CharSequence nodeDesc = node.getContentDescription();
+
+        if (nodeText != null) {
+            String s = nodeText.toString();
+            if (contains ? s.contains(text) : s.equals(text)) return true;
+        }
+        if (nodeDesc != null) {
+            String s = nodeDesc.toString();
+            if (contains ? s.contains(text) : s.equals(text)) return true;
+        }
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                boolean found = searchTextInTree(child, text, contains);
+                child.recycle();
+                if (found) return true;
+            }
+        }
+        return false;
+    }
+
     // ===== App Info =====
 
     private String getAppInfo() throws Exception {
@@ -832,10 +965,10 @@ public class OrbAccessibilityService extends AccessibilityService {
 
         GestureDescription.Builder builder = new GestureDescription.Builder();
         builder.addStroke(new GestureDescription.StrokeDescription(path, 0, duration));
-        boolean dispatched = dispatchGesture(builder.build(), null, null);
+        boolean completed = dispatchGestureAndWait(builder.build(), duration + 5000);
 
         JSONObject result = new JSONObject();
-        result.put("ok", dispatched);
+        result.put("ok", completed);
         return result.toString();
     }
 
@@ -851,10 +984,10 @@ public class OrbAccessibilityService extends AccessibilityService {
 
         GestureDescription.Builder builder = new GestureDescription.Builder();
         builder.addStroke(new GestureDescription.StrokeDescription(path, 0, duration));
-        boolean dispatched = dispatchGesture(builder.build(), null, null);
+        boolean completed = dispatchGestureAndWait(builder.build(), duration + 5000);
 
         JSONObject result = new JSONObject();
-        result.put("ok", dispatched);
+        result.put("ok", completed);
         result.put("x", x);
         result.put("y", y);
         return result.toString();
@@ -862,18 +995,19 @@ public class OrbAccessibilityService extends AccessibilityService {
 
     // ===== UI Tree =====
 
-    private String getUiTree(String query) throws Exception {
+    String getUiTree(String query) throws Exception {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return errorJson("No active window", "NOT_FOUND");
 
-        String filterPkg = null;
-        if (query.contains("package=")) {
-            filterPkg = query.split("package=")[1].split("&")[0];
-        }
+        try {
+            String filterPkg = getQueryParam(query, "package");
+            int maxDepth = clampInt(getQueryInt(query, "maxDepth", 15), 0, 40);
 
-        JSONObject tree = nodeToJson(root, 0, 15, filterPkg);
-        root.recycle();
-        return tree != null ? tree.toString() : errorJson("No matching content", "NOT_FOUND");
+            JSONObject tree = nodeToJson(root, 0, maxDepth, filterPkg);
+            return tree != null ? tree.toString() : errorJson("No matching content", "NOT_FOUND");
+        } finally {
+            root.recycle();
+        }
     }
 
     private JSONObject nodeToJson(AccessibilityNodeInfo node, int depth, int maxDepth, String filterPkg) throws Exception {
@@ -917,6 +1051,183 @@ public class OrbAccessibilityService extends AccessibilityService {
         }
 
         return obj;
+    }
+
+    /**
+     * GET /inspect — inspector-friendly flattened node list (AutoJs6-like fields).
+     * Query params:
+     *   package=xxx        — filter by package name
+     *   maxDepth=25        — limit recursion depth (0 = root only)
+     *   clickableOnly=true — only clickable/long-clickable nodes
+     *   textOnly=true      — only nodes with text or contentDescription
+     *   enabledOnly=true   — only enabled nodes
+     *   visibleOnly=true   — only nodes visible to user
+     *   contains=xxx       — fuzzy match in text/desc/id/class
+     */
+    String getUiInspect(String query) throws Exception {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return errorJson("No active window", "NOT_FOUND");
+
+        try {
+            String filterPkg = getQueryParam(query, "package");
+            int maxDepth = clampInt(getQueryInt(query, "maxDepth", 25), 0, 60);
+            boolean clickableOnly = getQueryBoolean(query, "clickableOnly", false)
+                    || getQueryBoolean(query, "clickable", false);
+            boolean textOnly = getQueryBoolean(query, "textOnly", false);
+            boolean enabledOnly = getQueryBoolean(query, "enabledOnly", false);
+            boolean visibleOnly = getQueryBoolean(query, "visibleOnly", false);
+            String contains = getQueryParam(query, "contains");
+
+            JSONArray nodes = new JSONArray();
+            collectInspectNodes(root, nodes,
+                    filterPkg, maxDepth,
+                    clickableOnly, textOnly, enabledOnly, visibleOnly, contains,
+                    0, -1, "0");
+
+            JSONObject result = new JSONObject();
+            result.put("ok", true);
+            result.put("count", nodes.length());
+            result.put("nodes", nodes);
+            return result.toString();
+        } finally {
+            root.recycle();
+        }
+    }
+
+    private void collectInspectNodes(
+            AccessibilityNodeInfo node,
+            JSONArray out,
+            String filterPkg,
+            int maxDepth,
+            boolean clickableOnly,
+            boolean textOnly,
+            boolean enabledOnly,
+            boolean visibleOnly,
+            String contains,
+            int depth,
+            int indexInParent,
+            String path
+    ) throws Exception {
+        if (node == null) return;
+
+        String pkg = node.getPackageName() != null ? node.getPackageName().toString() : "";
+        String className = node.getClassName() != null ? node.getClassName().toString() : "";
+        String text = node.getText() != null ? node.getText().toString() : "";
+        String desc = node.getContentDescription() != null ? node.getContentDescription().toString() : "";
+        String id = node.getViewIdResourceName() != null ? node.getViewIdResourceName() : "";
+
+        boolean packageMatch = filterPkg == null || filterPkg.isEmpty() || filterPkg.equals(pkg);
+        boolean clickable = node.isClickable();
+        boolean longClickable = node.isLongClickable();
+        boolean enabled = node.isEnabled();
+        boolean visibleToUser = node.isVisibleToUser();
+        boolean hasText = !text.isEmpty() || !desc.isEmpty();
+        boolean containsMatch = contains == null || contains.isEmpty()
+                || containsIgnoreCase(text, contains)
+                || containsIgnoreCase(desc, contains)
+                || containsIgnoreCase(id, contains)
+                || containsIgnoreCase(className, contains);
+
+        boolean passClickable = !clickableOnly || clickable || longClickable;
+        boolean passText = !textOnly || hasText;
+        boolean passEnabled = !enabledOnly || enabled;
+        boolean passVisible = !visibleOnly || visibleToUser;
+
+        if (packageMatch && containsMatch && passClickable && passText && passEnabled && passVisible) {
+            Rect bounds = new Rect();
+            node.getBoundsInScreen(bounds);
+
+            JSONObject item = new JSONObject();
+            item.put("path", path);
+            item.put("depth", depth);
+            item.put("indexInParent", indexInParent);
+            item.put("childCount", node.getChildCount());
+            item.put("class", className);
+            item.put("id", id);
+            item.put("text", text);
+            item.put("desc", desc);
+            item.put("pkg", pkg);
+            item.put("clickable", clickable);
+            item.put("longClickable", longClickable);
+            item.put("scrollable", node.isScrollable());
+            item.put("editable", node.isEditable());
+            item.put("enabled", enabled);
+            item.put("focusable", node.isFocusable());
+            item.put("focused", node.isFocused());
+            item.put("selected", node.isSelected());
+            item.put("checkable", node.isCheckable());
+            item.put("checked", node.isChecked());
+            item.put("visibleToUser", visibleToUser);
+            item.put("bounds", bounds.flattenToString());
+            item.put("left", bounds.left);
+            item.put("top", bounds.top);
+            item.put("right", bounds.right);
+            item.put("bottom", bounds.bottom);
+            item.put("centerX", bounds.centerX());
+            item.put("centerY", bounds.centerY());
+            out.put(item);
+        }
+
+        if (depth >= maxDepth) return;
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                collectInspectNodes(child, out,
+                        filterPkg, maxDepth,
+                        clickableOnly, textOnly, enabledOnly, visibleOnly, contains,
+                        depth + 1, i, path + "." + i);
+                child.recycle();
+            }
+        }
+    }
+
+    private String getQueryParam(String query, String key) {
+        if (query == null || query.isEmpty() || key == null || key.isEmpty()) return null;
+        String[] pairs = query.split("&");
+        for (String pair : pairs) {
+            if (pair == null || pair.isEmpty()) continue;
+            try {
+                String[] kv = pair.split("=", 2);
+                String k = URLDecoder.decode(kv[0], StandardCharsets.UTF_8.name());
+                if (!key.equals(k)) continue;
+                return kv.length > 1
+                        ? URLDecoder.decode(kv[1], StandardCharsets.UTF_8.name())
+                        : "";
+            } catch (Exception ignored) {
+                // ignore malformed query fragment
+            }
+        }
+        return null;
+    }
+
+    private boolean getQueryBoolean(String query, String key, boolean defaultValue) {
+        String val = getQueryParam(query, key);
+        if (val == null || val.isEmpty()) return defaultValue;
+        return "1".equals(val)
+                || "true".equalsIgnoreCase(val)
+                || "yes".equalsIgnoreCase(val)
+                || "y".equalsIgnoreCase(val);
+    }
+
+    private int getQueryInt(String query, String key, int defaultValue) {
+        String val = getQueryParam(query, key);
+        if (val == null || val.isEmpty()) return defaultValue;
+        try {
+            return Integer.parseInt(val);
+        } catch (Exception ignored) {
+            return defaultValue;
+        }
+    }
+
+    private int clampInt(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private boolean containsIgnoreCase(String haystack, String needle) {
+        if (needle == null || needle.isEmpty()) return true;
+        if (haystack == null || haystack.isEmpty()) return false;
+        return haystack.toLowerCase(Locale.ROOT).contains(needle.toLowerCase(Locale.ROOT));
     }
 
     // ===== Screen Elements (v2.1 enhanced) =====
@@ -1034,10 +1345,10 @@ public class OrbAccessibilityService extends AccessibilityService {
 
         GestureDescription.Builder builder = new GestureDescription.Builder();
         builder.addStroke(new GestureDescription.StrokeDescription(path, 0, duration));
-        boolean dispatched = dispatchGesture(builder.build(), null, null);
+        boolean completed = dispatchGestureAndWait(builder.build(), 5000);
 
         JSONObject result = new JSONObject();
-        result.put("ok", dispatched);
+        result.put("ok", completed);
         result.put("x", x);
         result.put("y", y);
         return result.toString();
@@ -1482,7 +1793,9 @@ public class OrbAccessibilityService extends AccessibilityService {
                 input = source;
             }
 
-            List<OcrLineData> lines = runOcr(input);
+            String requestedEngine = normalizeOcrEngine(body.optString("engine", OCR_ENGINE_AUTO));
+            OcrRunResult ocrResult = runOcrWithEngine(input, requestedEngine);
+            List<OcrLineData> lines = ocrResult.lines;
             int offsetX = cropRect != null ? cropRect.left : 0;
             int offsetY = cropRect != null ? cropRect.top : 0;
 
@@ -1509,7 +1822,8 @@ public class OrbAccessibilityService extends AccessibilityService {
 
             JSONObject result = new JSONObject();
             result.put("ok", true);
-            result.put("engine", "mlkit_chinese");
+            result.put("engine", ocrResult.engine);
+            result.put("requestedEngine", requestedEngine);
             result.put("source", useInlineImage ? "imageBase64" : "screenshot");
             result.put("imageWidth", source.getWidth());
             result.put("imageHeight", source.getHeight());
@@ -1652,7 +1966,205 @@ public class OrbAccessibilityService extends AccessibilityService {
         return Math.max(min, Math.min(max, value));
     }
 
-    private List<OcrLineData> runOcr(Bitmap bitmap) throws Exception {
+    private static class OcrRunResult {
+        final String engine;
+        final List<OcrLineData> lines;
+
+        OcrRunResult(String engine, List<OcrLineData> lines) {
+            this.engine = engine;
+            this.lines = lines;
+        }
+    }
+
+    private String normalizeOcrEngine(String engine) {
+        if (engine == null) return OCR_ENGINE_AUTO;
+        String v = engine.trim().toLowerCase(Locale.ROOT);
+        if (v.isEmpty()) return OCR_ENGINE_AUTO;
+        if ("mlkit_chinese".equals(v) || "mlkit".equals(v)) return OCR_ENGINE_MLKIT;
+        if ("paddle".equals(v) || "paddle_lite".equals(v)) return OCR_ENGINE_PADDLE;
+        if ("auto".equals(v)) return OCR_ENGINE_AUTO;
+        return OCR_ENGINE_AUTO;
+    }
+
+    private OcrRunResult runOcrWithEngine(Bitmap bitmap, String engine) throws Exception {
+        String normalized = normalizeOcrEngine(engine);
+        if (OCR_ENGINE_PADDLE.equals(normalized)) {
+            List<OcrLineData> lines = splitOcrLinesOnWhitespace(runOcrPaddle(bitmap));
+            return new OcrRunResult("paddle_lite", lines);
+        }
+        if (OCR_ENGINE_MLKIT.equals(normalized)) {
+            List<OcrLineData> lines = splitOcrLinesOnWhitespace(runOcrMlkit(bitmap));
+            return new OcrRunResult("mlkit_chinese", lines);
+        }
+
+        // auto: try Paddle first, then fallback to ML Kit.
+        try {
+            List<OcrLineData> lines = splitOcrLinesOnWhitespace(runOcrPaddle(bitmap));
+            if (lines != null && !lines.isEmpty()) {
+                return new OcrRunResult("paddle_lite", lines);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "Paddle OCR unavailable in auto mode, fallback to ML Kit: " + t.getMessage());
+        }
+        List<OcrLineData> lines = splitOcrLinesOnWhitespace(runOcrMlkit(bitmap));
+        return new OcrRunResult("mlkit_chinese", lines);
+    }
+
+    private List<OcrLineData> splitOcrLinesOnWhitespace(List<OcrLineData> lines) {
+        List<OcrLineData> out = new ArrayList<>();
+        if (lines == null) return out;
+        for (OcrLineData line : lines) {
+            if (line == null || line.bounds == null) continue;
+            out.addAll(splitSingleOcrLine(line));
+        }
+        return out;
+    }
+
+    private List<OcrLineData> splitSingleOcrLine(OcrLineData line) {
+        List<OcrLineData> out = new ArrayList<>();
+        String text = line.text != null ? line.text : "";
+        if (text.isEmpty()) {
+            out.add(line);
+            return out;
+        }
+
+        List<int[]> spans = new ArrayList<>();
+        int length = text.length();
+        int i = 0;
+        while (i < length) {
+            while (i < length && Character.isWhitespace(text.charAt(i))) {
+                i++;
+            }
+            if (i >= length) break;
+            int start = i;
+            while (i < length && !Character.isWhitespace(text.charAt(i))) {
+                i++;
+            }
+            spans.add(new int[]{start, i});
+        }
+
+        if (spans.size() <= 1) {
+            out.add(line);
+            return out;
+        }
+
+        Rect b = line.bounds;
+        int width = Math.max(OCR_MIN_TOKEN_SIZE_PX, b.width());
+        int height = Math.max(OCR_MIN_TOKEN_SIZE_PX, b.height());
+        boolean horizontal = width >= height;
+
+        for (int[] span : spans) {
+            int start = span[0];
+            int end = span[1];
+            String token = text.substring(start, end);
+            if (token.isEmpty()) continue;
+
+            Rect tokenBounds;
+            if (horizontal) {
+                int left = b.left + Math.round(width * (start / (float) length));
+                int right = b.left + Math.round(width * (end / (float) length));
+                left = clamp(left, b.left, b.right - OCR_MIN_TOKEN_SIZE_PX);
+                right = clamp(right, left + OCR_MIN_TOKEN_SIZE_PX, b.right);
+                tokenBounds = new Rect(left, b.top, right, b.bottom);
+            } else {
+                int top = b.top + Math.round(height * (start / (float) length));
+                int bottom = b.top + Math.round(height * (end / (float) length));
+                top = clamp(top, b.top, b.bottom - OCR_MIN_TOKEN_SIZE_PX);
+                bottom = clamp(bottom, top + OCR_MIN_TOKEN_SIZE_PX, b.bottom);
+                tokenBounds = new Rect(b.left, top, b.right, bottom);
+            }
+            out.add(new OcrLineData(token, tokenBounds));
+        }
+
+        if (out.isEmpty()) {
+            out.add(line);
+        }
+        return out;
+    }
+
+    private Predictor ensurePaddlePredictor() {
+        synchronized (paddleLock) {
+            if (paddlePredictor != null && paddlePredictor.isLoaded()) {
+                return paddlePredictor;
+            }
+            try {
+                Predictor predictor = new Predictor();
+                boolean ok = predictor.init(getApplicationContext());
+                if (!ok) {
+                    paddleInitError = "predictor init returned false";
+                    return null;
+                }
+                paddlePredictor = predictor;
+                paddleInitError = "";
+                Log.i(TAG, "Paddle OCR predictor initialized");
+                return paddlePredictor;
+            } catch (Throwable t) {
+                paddleInitError = t.getMessage() != null ? t.getMessage() : t.toString();
+                Log.e(TAG, "Paddle OCR init failed: " + paddleInitError);
+                return null;
+            }
+        }
+    }
+
+    private void releasePaddlePredictor() {
+        synchronized (paddleLock) {
+            if (paddlePredictor != null) {
+                try {
+                    paddlePredictor.releaseModel();
+                } catch (Throwable ignored) {}
+                paddlePredictor = null;
+            }
+        }
+    }
+
+    private Rect rectFromPaddlePoints(List<Point> points, int imageWidth, int imageHeight) {
+        if (points == null || points.isEmpty()) return null;
+        int left = imageWidth;
+        int top = imageHeight;
+        int right = 0;
+        int bottom = 0;
+        for (Point p : points) {
+            if (p == null) continue;
+            left = Math.min(left, p.x);
+            top = Math.min(top, p.y);
+            right = Math.max(right, p.x);
+            bottom = Math.max(bottom, p.y);
+        }
+        if (right <= left || bottom <= top) return null;
+        left = clamp(left, 0, Math.max(0, imageWidth - 1));
+        top = clamp(top, 0, Math.max(0, imageHeight - 1));
+        right = clamp(right, left + 1, Math.max(left + 1, imageWidth));
+        bottom = clamp(bottom, top + 1, Math.max(top + 1, imageHeight));
+        return new Rect(left, top, right, bottom);
+    }
+
+    private List<OcrLineData> runOcrPaddle(Bitmap bitmap) throws Exception {
+        Predictor predictor = ensurePaddlePredictor();
+        if (predictor == null) {
+            throw new IllegalStateException("Paddle OCR unavailable: " + paddleInitError);
+        }
+
+        synchronized (paddleLock) {
+            predictor.setInputImage(bitmap);
+            boolean ok = predictor.runModel();
+            if (!ok) {
+                throw new IllegalStateException("Paddle OCR runModel returned false");
+            }
+            ArrayList<OcrResultModel> results = predictor.outputResults();
+            List<OcrLineData> out = new ArrayList<>();
+            for (OcrResultModel model : results) {
+                if (model == null) continue;
+                String text = model.getLabel();
+                if (text == null || text.trim().isEmpty()) continue;
+                Rect rect = rectFromPaddlePoints(model.getPoints(), bitmap.getWidth(), bitmap.getHeight());
+                if (rect == null) continue;
+                out.add(new OcrLineData(text, rect));
+            }
+            return out;
+        }
+    }
+
+    private List<OcrLineData> runOcrMlkit(Bitmap bitmap) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<List<OcrLineData>> outRef = new AtomicReference<>(new ArrayList<>());
         AtomicReference<String> errorRef = new AtomicReference<>(null);
@@ -1720,13 +2232,42 @@ public class OrbAccessibilityService extends AccessibilityService {
         return item;
     }
 
+    /**
+     * Dispatch a gesture and block until it completes or is cancelled.
+     * Returns true only when the gesture finishes successfully.
+     */
+    private boolean dispatchGestureAndWait(GestureDescription gesture, long timeoutMs) {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicBoolean result = new AtomicBoolean(false);
+
+        boolean dispatched = dispatchGesture(gesture, new AccessibilityService.GestureResultCallback() {
+            @Override
+            public void onCompleted(GestureDescription gestureDescription) {
+                result.set(true);
+                latch.countDown();
+            }
+            @Override
+            public void onCancelled(GestureDescription gestureDescription) {
+                result.set(false);
+                latch.countDown();
+            }
+        }, null);
+
+        if (!dispatched) return false;
+
+        try {
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {}
+        return result.get();
+    }
+
     private boolean dispatchTapPoint(int x, int y, long duration) {
         try {
             Path path = new Path();
             path.moveTo(x, y);
             GestureDescription.Builder builder = new GestureDescription.Builder();
             builder.addStroke(new GestureDescription.StrokeDescription(path, 0, duration));
-            return dispatchGesture(builder.build(), null, null);
+            return dispatchGestureAndWait(builder.build(), 5000);
         } catch (Exception e) {
             return false;
         }
@@ -1740,16 +2281,35 @@ public class OrbAccessibilityService extends AccessibilityService {
      */
     private String handleClipboardGet() throws Exception {
         final String[] textHolder = {null};
+        final boolean[] hasPrimaryClipHolder = {false};
+        final int[] itemCountHolder = {0};
+        final JSONArray mimeTypesHolder = new JSONArray();
         final CountDownLatch latch = new CountDownLatch(1);
 
         // ClipboardManager must be accessed on main thread
         new Handler(Looper.getMainLooper()).post(() -> {
             try {
                 ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                if (cm != null && cm.hasPrimaryClip()) {
-                    ClipData.Item item = cm.getPrimaryClip().getItemAt(0);
-                    CharSequence text = item.getText();
-                    textHolder[0] = text != null ? text.toString() : "";
+                if (cm != null) {
+                    hasPrimaryClipHolder[0] = cm.hasPrimaryClip();
+                    ClipDescription desc = cm.getPrimaryClipDescription();
+                    if (desc != null) {
+                        for (int i = 0; i < desc.getMimeTypeCount(); i++) {
+                            mimeTypesHolder.put(desc.getMimeType(i));
+                        }
+                    }
+                }
+                if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip() != null) {
+                    ClipData clipData = cm.getPrimaryClip();
+                    itemCountHolder[0] = clipData.getItemCount();
+                    if (clipData.getItemCount() > 0) {
+                        ClipData.Item item = clipData.getItemAt(0);
+                        // coerceToText is more robust than getText() when clip item is URI/intent.
+                        CharSequence text = item.coerceToText(getApplicationContext());
+                        textHolder[0] = text != null ? text.toString() : "";
+                    } else {
+                        textHolder[0] = "";
+                    }
                 } else {
                     textHolder[0] = "";
                 }
@@ -1766,6 +2326,9 @@ public class OrbAccessibilityService extends AccessibilityService {
         JSONObject result = new JSONObject();
         result.put("ok", true);
         result.put("text", textHolder[0]);
+        result.put("hasPrimaryClip", hasPrimaryClipHolder[0]);
+        result.put("itemCount", itemCountHolder[0]);
+        result.put("mimeTypes", mimeTypesHolder);
         return result.toString();
     }
 
@@ -1863,10 +2426,10 @@ public class OrbAccessibilityService extends AccessibilityService {
         builder.addStroke(new GestureDescription.StrokeDescription(path1, 0, durationMs));
         builder.addStroke(new GestureDescription.StrokeDescription(path2, 0, durationMs));
 
-        boolean dispatched = dispatchGesture(builder.build(), null, null);
+        boolean completed = dispatchGestureAndWait(builder.build(), durationMs + 5000);
 
         JSONObject result = new JSONObject();
-        result.put("ok", dispatched);
+        result.put("ok", completed);
         result.put("type", pinchIn ? "pinch_in" : "pinch_out");
         result.put("x", cx);
         result.put("y", cy);
@@ -1903,10 +2466,10 @@ public class OrbAccessibilityService extends AccessibilityService {
             builder.addStroke(new GestureDescription.StrokeDescription(p, startMs, durationMs));
         }
 
-        boolean dispatched = dispatchGesture(builder.build(), null, null);
+        boolean completed = dispatchGestureAndWait(builder.build(), 30000);
 
         JSONObject result = new JSONObject();
-        result.put("ok", dispatched);
+        result.put("ok", completed);
         result.put("type", "multi");
         result.put("strokeCount", strokes.length());
         return result.toString();
