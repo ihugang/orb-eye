@@ -2,6 +2,42 @@
 
 ---
 
+## v2.5 (2026-04-15)
+
+### Improved Endpoints
+
+#### `POST /find` — diagnostics on failure + fuzzy matching
+
+`/find` now returns structured diagnostics when lookup fails, instead of only generic NOT_FOUND.
+
+New request options:
+- `"fuzzy": true` — enable fuzzy fallback matching (text/desc/id similarity)
+- `"candidates": 5` — max number of diagnostic candidates in failure response (0..20)
+
+Failure response now includes:
+- `found: false`
+- `reason` (`text_mismatch`, `desc_mismatch`, `id_mismatch`, `not_clickable`, `need_scroll`, `off_screen`, `another_window`, etc.)
+- `candidates[]` with `text/id/score/bounds`
+
+Example failure response:
+```json
+{
+  "ok": false,
+  "found": false,
+  "reason": "text_mismatch",
+  "candidates": [
+    {"text":"立即购买","score":0.72,"bounds":[120,1980,960,2088]}
+  ]
+}
+```
+
+Also on success, response now includes:
+- `found: true`
+- `reason: "exact_match"` or `"fuzzy_match"`
+- `score` (fuzzy confidence)
+
+---
+
 ## v2.2 (2026-03-24)
 
 ### New Endpoints

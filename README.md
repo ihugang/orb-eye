@@ -78,11 +78,35 @@ curl http://localhost:7333/ping
 curl http://localhost:7333/screen
 # → {"elements":[{"text":"Send","centerX":990,"centerY":1850,"clickable":true,...}]}
 
+# Inspect tree as browser-rendered HTML
+# 1) adb forward tcp:17333 tcp:7333
+# 2) open in browser: http://127.0.0.1:17333/inspect?format=html
+# Optional filters still work: package/maxDepth/clickableOnly/textOnly/enabledOnly/visibleOnly/contains
+
+# Enrich nodes with OCR text (merge accessibility + OCR by coordinates)
+curl "http://localhost:7333/enrich?maxDepth=25&visibleOnly=true"
+# → {"ok":true,"nodeCount":120,"ocrLineCount":42,"nodes":[{"id":"price_text","text":"","ocr_text":"¥199",...}],...}
+
 # Find a specific button — get its center for tapping
 curl -X POST http://localhost:7333/find \
   -H 'Content-Type: application/json' \
   -d '{"text":"Send","clickable":true}'
-# → {"ok":true,"centerX":990,"centerY":1850,"matchCount":1,...}
+# → {"ok":true,"found":true,"reason":"exact_match","centerX":990,"centerY":1850,"matchCount":1,...}
+
+# Fuzzy find (useful for typo / near-text)
+curl -X POST http://localhost:7333/find \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"立即购","fuzzy":true,"clickable":true}'
+# → {"ok":true,"found":true,"reason":"fuzzy_match","score":0.84,...}
+
+# Find failed — now includes reason + candidates
+curl -X POST http://localhost:7333/find \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"立刻购买","clickable":true,"fuzzy":true}'
+# → {"ok":false,"found":false,"reason":"text_mismatch","candidates":[{"text":"立即购买","score":0.72,...}],...}
+
+# reason enum:
+# text_mismatch | desc_mismatch | id_mismatch | not_clickable | need_scroll | off_screen | another_window | index_out_of_range | no_active_window
 
 # Then tap it
 curl -X POST http://localhost:7333/tap \

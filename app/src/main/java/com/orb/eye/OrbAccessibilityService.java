@@ -32,6 +32,7 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.HorizontalScrollView;
@@ -61,10 +62,12 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -82,6 +85,18 @@ public class OrbAccessibilityService extends AccessibilityService {
     private static final String OCR_ENGINE_PADDLE = "paddle";
     private static final int OCR_MIN_TOKEN_SIZE_PX = 1;
     private static final int INSPECTOR_DEFAULT_MAX_DEPTH = 40;
+    private static final int FIND_MAX_DIAGNOSTIC_NODES = 1200;
+    private static final int FIND_MAX_DIAGNOSTIC_DEPTH = 24;
+    private static final long FIND_MAX_DIAGNOSTIC_MS = 1200L;
+    private static final String FIND_REASON_TEXT_MISMATCH = "text_mismatch";
+    private static final String FIND_REASON_DESC_MISMATCH = "desc_mismatch";
+    private static final String FIND_REASON_ID_MISMATCH = "id_mismatch";
+    private static final String FIND_REASON_NOT_CLICKABLE = "not_clickable";
+    private static final String FIND_REASON_NEED_SCROLL = "need_scroll";
+    private static final String FIND_REASON_OFF_SCREEN = "off_screen";
+    private static final String FIND_REASON_ANOTHER_WINDOW = "another_window";
+    private static final String FIND_REASON_INDEX_OUT_OF_RANGE = "index_out_of_range";
+    private static final String FIND_REASON_NO_ACTIVE_WINDOW = "no_active_window";
     private static final int[] INSPECTOR_LEVEL_COLORS = new int[] {
             0xFF00BCD4, // cyan
             0xFF4CAF50, // green
@@ -234,7 +249,7 @@ public class OrbAccessibilityService extends AccessibilityService {
     // ===== HTTP Server =====
 
     private static boolean isOcrRoute(String route) {
-        return "/ocr".equals(route) || "/ocr-screen".equals(route);
+        return "/ocr".equals(route) || "/ocr-screen".equals(route) || "/enrich".equals(route);
     }
 
     private void startHttpServer() {
@@ -264,7 +279,7 @@ public class OrbAccessibilityService extends AccessibilityService {
 
     private void dispatchRequest(Socket client) {
         try {
-            BufferedReader reader = new BufferedReader(new InputStreamReader(client.getInputStream()));
+            BufferedReader reader = new BufferedReader(new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
             String requestLine = reader.readLine();
             if (requestLine == null) { client.close(); return; }
             String[] parts = requestLine.split(" ");
@@ -306,27 +321,17 @@ public class OrbAccessibilityService extends AccessibilityService {
 
             String body = "";
             if (contentLength > 0) {
-                char[] buf = new char[contentLength];
-                int off = 0;
-                while (off < contentLength) {
-                    int n = reader.read(buf, off, contentLength - off);
-                    if (n <= 0) break;
-                    off += n;
-                }
-                body = new String(buf, 0, off);
-                if (off < contentLength) {
-                    Log.w(TAG, "request body truncated: read=" + off + " expected=" + contentLength);
-                }
+                body = readUtf8Body(reader, contentLength);
             }
 
             String[] parts = requestLine.split(" ");
             String method = parts[0];
             String path = parts[1];
             String route = path.contains("?") ? path.substring(0, path.indexOf("?")) : path;
+            String query = path.contains("?") ? path.substring(path.indexOf("?") + 1) : "";
 
             // /exec: support both JSON body and raw JS body
             if ("/exec".equals(route)) {
-                String query = path.contains("?") ? path.substring(path.indexOf("?") + 1) : "";
                 JSONObject bodyJson = parseExecBody(body, query);
                 boolean stream = bodyJson.optBoolean("stream", false);
                 if (!stream) {
@@ -345,10 +350,15 @@ public class OrbAccessibilityService extends AccessibilityService {
                 response = errorJson("Internal error: " + e.getMessage(), "INTERNAL_ERROR");
             }
 
+            String contentType = "application/json; charset=utf-8";
+            if ("/inspect".equals(route) && "html".equalsIgnoreCase(getQueryParam(query, "format"))) {
+                contentType = "text/html; charset=utf-8";
+            }
+
             OutputStream out = client.getOutputStream();
             byte[] responseBytes = response.getBytes("UTF-8");
             String http = "HTTP/1.1 200 OK\r\n"
-                    + "Content-Type: application/json; charset=utf-8\r\n"
+                    + "Content-Type: " + contentType + "\r\n"
                     + "Access-Control-Allow-Origin: *\r\n"
                     + "Content-Length: " + responseBytes.length + "\r\n"
                     + "\r\n";
@@ -359,6 +369,38 @@ public class OrbAccessibilityService extends AccessibilityService {
         } catch (Exception e) {
             Log.e(TAG, "Request error: " + e.getMessage());
         }
+    }
+
+    private String readUtf8Body(BufferedReader reader, int contentLengthBytes) throws Exception {
+        if (reader == null || contentLengthBytes <= 0) return "";
+        StringBuilder body = new StringBuilder(Math.max(32, contentLengthBytes));
+        int consumedBytes = 0;
+
+        while (consumedBytes < contentLengthBytes) {
+            int ch = reader.read();
+            if (ch < 0) break;
+            char c = (char) ch;
+
+            if (Character.isHighSurrogate(c)) {
+                int next = reader.read();
+                if (next >= 0) {
+                    char low = (char) next;
+                    body.append(c).append(low);
+                    consumedBytes += new String(new char[] { c, low }).getBytes(StandardCharsets.UTF_8).length;
+                } else {
+                    body.append(c);
+                    consumedBytes += String.valueOf(c).getBytes(StandardCharsets.UTF_8).length;
+                }
+            } else {
+                body.append(c);
+                consumedBytes += String.valueOf(c).getBytes(StandardCharsets.UTF_8).length;
+            }
+        }
+
+        if (consumedBytes < contentLengthBytes) {
+            Log.w(TAG, "request body truncated: bytesRead=" + consumedBytes + " expected=" + contentLengthBytes);
+        }
+        return body.toString();
     }
 
     // ===== Router =====
@@ -403,6 +445,15 @@ public class OrbAccessibilityService extends AccessibilityService {
 
             case "/screen":
                 return getScreenElements(query);
+
+            case "/enrich":
+                if ("GET".equals(method)) {
+                    return handleEnrich(query, null);
+                }
+                return handleEnrich(query, body == null || body.isEmpty() ? new JSONObject() : new JSONObject(body));
+
+            case "/summary":
+                return getScreenSummary(query);
 
             case "/focused":
                 return getFocusedElement();
@@ -1158,10 +1209,20 @@ public class OrbAccessibilityService extends AccessibilityService {
      *   enabledOnly=true   — only enabled nodes
      *   visibleOnly=true   — only nodes visible to user
      *   contains=xxx       — fuzzy match in text/desc/id/class
+     *   format=html        — render an in-browser tree inspector page
      */
     String getUiInspect(String query) throws Exception {
+        String format = getQueryParam(query, "format");
+        boolean htmlFormat = "html".equalsIgnoreCase(format);
+        String mode = getQueryParam(query, "mode");
+        boolean layoutMode = "layout".equalsIgnoreCase(mode);
         AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return errorJson("No active window", "NOT_FOUND");
+        if (root == null) {
+            if (htmlFormat) {
+                return renderInspectHtmlError("No active window");
+            }
+            return errorJson("No active window", "NOT_FOUND");
+        }
 
         try {
             String filterPkg = getQueryParam(query, "package");
@@ -1179,6 +1240,24 @@ public class OrbAccessibilityService extends AccessibilityService {
                     clickableOnly, textOnly, enabledOnly, visibleOnly, contains,
                     0, -1, "0");
 
+            if (htmlFormat) {
+                if (layoutMode) {
+                    int sw = getResources().getDisplayMetrics().widthPixels;
+                    int sh = getResources().getDisplayMetrics().heightPixels;
+                    return renderInspectLayoutHtml(nodes, sw, sh, filterPkg, maxDepth);
+                }
+                return renderInspectHtml(
+                        nodes,
+                        filterPkg,
+                        maxDepth,
+                        clickableOnly,
+                        textOnly,
+                        enabledOnly,
+                        visibleOnly,
+                        contains
+                );
+            }
+
             JSONObject result = new JSONObject();
             result.put("ok", true);
             result.put("count", nodes.length());
@@ -1187,6 +1266,545 @@ public class OrbAccessibilityService extends AccessibilityService {
         } finally {
             root.recycle();
         }
+    }
+
+    private String renderInspectHtml(
+            JSONArray nodes,
+            String filterPkg,
+            int maxDepth,
+            boolean clickableOnly,
+            boolean textOnly,
+            boolean enabledOnly,
+            boolean visibleOnly,
+            String contains
+    ) throws Exception {
+        StringBuilder sb = new StringBuilder(Math.max(4096, nodes.length() * 240));
+        sb.append("<!doctype html><html><head><meta charset=\"utf-8\">");
+        sb.append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+        sb.append("<title>Orb Eye Inspect</title>");
+        sb.append("<style>");
+        sb.append("body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#0f1115;color:#e6edf3;}");
+        sb.append(".wrap{padding:14px 16px 24px 16px;max-width:1400px;margin:0 auto;}");
+        sb.append(".top{position:sticky;top:0;background:#0f1115cc;backdrop-filter:blur(6px);padding:10px 0 12px 0;border-bottom:1px solid #222a36;z-index:10;}");
+        sb.append(".title{font-size:18px;font-weight:700;margin:0 0 6px 0;color:#8cc8ff;}");
+        sb.append(".meta{font-size:12px;color:#9fb1c6;line-height:1.5;}");
+        sb.append(".badge{display:inline-block;padding:1px 6px;border-radius:999px;border:1px solid #384355;margin-right:6px;font-size:11px;color:#c6d1de;}");
+        sb.append(".node{margin:6px 0;border:1px solid #232c38;border-radius:8px;background:#121720;}");
+        sb.append(".node summary{cursor:pointer;padding:8px 10px;list-style:none;outline:none;}");
+        sb.append(".node summary::-webkit-details-marker{display:none;}");
+        sb.append(".row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}");
+        sb.append(".depth{color:#74c0fc;font-weight:700;}");
+        sb.append(".path{color:#a5d8ff;}");
+        sb.append(".label{color:#f1f5f9;font-weight:600;}");
+        sb.append(".cls{color:#94d2bd;}");
+        sb.append(".flags{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;}");
+        sb.append(".flag{font-size:11px;padding:1px 5px;border-radius:5px;border:1px solid #3b4a61;color:#b7c7db;}");
+        sb.append(".detail{padding:0 10px 10px 10px;color:#c9d6e2;font-size:12px;line-height:1.45;}");
+        sb.append(".detail div{margin-top:4px;word-break:break-all;}");
+        sb.append("</style></head><body><div class=\"wrap\">");
+
+        sb.append("<div class=\"top\">");
+        sb.append("<h1 class=\"title\">Orb Eye /inspect (HTML)</h1>");
+        sb.append("<a href=\"/inspect?format=html&mode=layout\" style=\"font-size:11px;color:#74c0fc;text-decoration:none;margin-left:12px;padding:2px 8px;border:1px solid #384355;border-radius:5px;\">&#x25a3; Layout View</a>");
+        sb.append("<div class=\"meta\">");
+        sb.append("<span class=\"badge\">count=").append(nodes.length()).append("</span>");
+        sb.append("<span class=\"badge\">maxDepth=").append(maxDepth).append("</span>");
+        if (filterPkg != null && !filterPkg.isEmpty()) {
+            sb.append("<span class=\"badge\">package=").append(escapeHtml(filterPkg)).append("</span>");
+        }
+        if (contains != null && !contains.isEmpty()) {
+            sb.append("<span class=\"badge\">contains=").append(escapeHtml(contains)).append("</span>");
+        }
+        if (clickableOnly) sb.append("<span class=\"badge\">clickableOnly</span>");
+        if (textOnly) sb.append("<span class=\"badge\">textOnly</span>");
+        if (enabledOnly) sb.append("<span class=\"badge\">enabledOnly</span>");
+        if (visibleOnly) sb.append("<span class=\"badge\">visibleOnly</span>");
+        sb.append("</div></div>");
+
+        for (int i = 0; i < nodes.length(); i++) {
+            JSONObject item = nodes.getJSONObject(i);
+            int depth = item.optInt("depth", 0);
+            String path = item.optString("path", "");
+            String className = item.optString("class", "");
+            String text = item.optString("text", "");
+            String desc = item.optString("desc", "");
+            String id = item.optString("id", "");
+            String pkg = item.optString("pkg", "");
+            String bounds = item.optString("bounds", "");
+            int centerX = item.optInt("centerX", 0);
+            int centerY = item.optInt("centerY", 0);
+
+            String label = !text.isEmpty() ? text
+                    : (!desc.isEmpty() ? desc
+                    : (!id.isEmpty() ? id : className));
+            label = shortenInspectorText(label, 80);
+            String classShort = shortenInspectorText(className, 72);
+
+            int indent = Math.max(0, depth) * 14;
+            sb.append("<details class=\"node\" ").append(depth <= 1 ? "open" : "").append(" style=\"margin-left:")
+                    .append(indent).append("px\">");
+            sb.append("<summary><div class=\"row\">");
+            sb.append("<span class=\"depth\">D").append(depth).append("</span>");
+            sb.append("<span class=\"path\">").append(escapeHtml(path)).append("</span>");
+            sb.append("<span class=\"label\">").append(escapeHtml(label)).append("</span>");
+            sb.append("<span class=\"cls\">").append(escapeHtml(classShort)).append("</span>");
+            sb.append("<span class=\"flags\">");
+            if (item.optBoolean("clickable", false)) sb.append("<span class=\"flag\">click</span>");
+            if (item.optBoolean("longClickable", false)) sb.append("<span class=\"flag\">long</span>");
+            if (item.optBoolean("editable", false)) sb.append("<span class=\"flag\">edit</span>");
+            if (item.optBoolean("scrollable", false)) sb.append("<span class=\"flag\">scroll</span>");
+            if (item.optBoolean("visibleToUser", false)) sb.append("<span class=\"flag\">visible</span>");
+            if (!item.optBoolean("enabled", true)) sb.append("<span class=\"flag\">disabled</span>");
+            sb.append("</span>");
+            sb.append("</div></summary>");
+
+            sb.append("<div class=\"detail\">");
+            sb.append("<div><b>id</b>: ").append(escapeHtml(id)).append("</div>");
+            sb.append("<div><b>text</b>: ").append(escapeHtml(text)).append("</div>");
+            sb.append("<div><b>desc</b>: ").append(escapeHtml(desc)).append("</div>");
+            sb.append("<div><b>pkg</b>: ").append(escapeHtml(pkg)).append("</div>");
+            sb.append("<div><b>bounds</b>: ").append(escapeHtml(bounds)).append("</div>");
+            sb.append("<div><b>center</b>: ").append(centerX).append(", ").append(centerY)
+                    .append(" &nbsp;&nbsp; <b>childCount</b>: ").append(item.optInt("childCount", 0)).append("</div>");
+            sb.append("</div></details>");
+        }
+
+        sb.append("</div></body></html>");
+        return sb.toString();
+    }
+
+    /**
+     * Renders a layout-simulation HTML page for /inspect?format=html&mode=layout.
+     * Shows a scaled phone screen with node bounding boxes overlaid on a screenshot background.
+     * Left sidebar: searchable node list. Right panel: selected node detail.
+     */
+    private String renderInspectLayoutHtml(JSONArray nodes, int sw, int sh, String filterPkg, int maxDepth) throws Exception {
+        StringBuilder sb = new StringBuilder(65536);
+
+        // ── Head + CSS ─────────────────────────────────────────────────────────────
+        sb.append("<!doctype html><html><head><meta charset=\"utf-8\">");
+        sb.append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+        sb.append("<title>Orb Eye \u2022 Layout</title><style>");
+        sb.append("*{box-sizing:border-box;margin:0;padding:0}");
+        sb.append("body{background:#0d1117;color:#e6edf3;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;overflow:hidden;height:100vh;display:flex;flex-direction:column}");
+        // topbar
+        sb.append("#tb{height:40px;background:#161b22;border-bottom:1px solid #21262d;display:flex;align-items:center;gap:8px;padding:0 12px;flex-shrink:0}");
+        sb.append("#tb h1{font-size:13px;font-weight:700;color:#58a6ff;white-space:nowrap}");
+        sb.append(".tbg{padding:1px 7px;border-radius:999px;border:1px solid #30363d;font-size:10px;color:#8b949e;white-space:nowrap}");
+        sb.append(".tbn{font-size:11px;color:#8b949e;text-decoration:none;padding:2px 8px;border:1px solid #30363d;border-radius:5px}");
+        sb.append(".tbn:hover{color:#e6edf3;border-color:#6e7681}");
+        // layout
+        sb.append("#app{display:flex;flex:1;overflow:hidden;min-height:0}");
+        // sidebar
+        sb.append("#sb{width:248px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid #21262d;overflow:hidden}");
+        sb.append("#sb-top{padding:7px 8px;border-bottom:1px solid #21262d;flex-shrink:0}");
+        sb.append("#q{width:100%;padding:4px 8px;background:#0d1117;border:1px solid #30363d;border-radius:5px;color:#e6edf3;font-size:11px;outline:none}");
+        sb.append("#q:focus{border-color:#58a6ff}");
+        sb.append("#nl{flex:1;overflow-y:auto;overflow-x:auto}");
+        sb.append(".ni{display:flex;align-items:center;gap:3px;cursor:pointer;padding:1px 6px 1px 0;border-left:2px solid transparent;white-space:nowrap}");
+        sb.append(".ni:hover{background:#161b22}.ni.sel{background:#1c2d4a;border-left-color:#58a6ff}");
+        // tree prefix: dim guide chars, monospace, pre-whitespace, never shrink
+        sb.append(".tp{color:#3d444d;white-space:pre;flex-shrink:0;font-size:10px;line-height:1;user-select:none}");
+        sb.append(".tpc{color:#6e7681}"); // branch connector slightly brighter than guides
+        sb.append(".ni .d{width:6px;height:6px;border-radius:50%;flex-shrink:0}");
+        sb.append(".ni .lbl{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;color:#cdd9e5;min-width:40px}");
+        sb.append(".ni .fg{font-size:9px;color:#6e7681;flex-shrink:0;margin-left:2px}");
+        // resize handle
+        sb.append("#rsz{width:4px;flex-shrink:0;cursor:col-resize;background:transparent;transition:background .15s;position:relative;z-index:10}");
+        sb.append("#rsz:hover,#rsz.rz{background:#388bfd55}");
+        sb.append("#rsz::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:2px;height:32px;border-radius:1px;background:#484f58;opacity:0;transition:opacity .15s}");
+        sb.append("#rsz:hover::after,#rsz.rz::after{opacity:1}");
+        // canvas
+        sb.append("#cv{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#010409;position:relative}");
+        sb.append("#hint{position:absolute;top:6px;right:8px;font-size:10px;color:#484f58;pointer-events:none;user-select:none}");
+        sb.append("#pw{position:relative;transform-origin:center center;flex-shrink:0}");
+        sb.append("#ps{position:relative;overflow:hidden;background:#111;box-shadow:0 0 0 1px #30363d,0 12px 40px #000a}");
+        sb.append("#bg{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none;z-index:0;opacity:0;transition:opacity .4s}");
+        sb.append("#bg.loaded{opacity:1}");
+        // node boxes
+        sb.append(".nb{position:absolute;cursor:pointer;transition:box-shadow .08s}");
+        // type colours (inset box-shadow = inner border, no layout impact)
+        sb.append(".nc{background:rgba(59,130,246,.14);box-shadow:inset 0 0 0 1px rgba(59,130,246,.55)}"); // clickable blue
+        sb.append(".ne{background:rgba(16,185,129,.17);box-shadow:inset 0 0 0 1px rgba(16,185,129,.65)}"); // editable green
+        sb.append(".ns{background:rgba(245,158,11,.11);box-shadow:inset 0 0 0 1px rgba(245,158,11,.5)}");  // scrollable amber
+        sb.append(".nk{background:transparent;box-shadow:inset 0 0 0 1px rgba(100,116,139,.18)}");         // container slate dashed effect
+        sb.append(".nl2{background:rgba(148,163,184,.04);box-shadow:inset 0 0 0 1px rgba(148,163,184,.18)}"); // leaf
+        sb.append(".nb:hover{background:rgba(255,255,255,.12)!important;box-shadow:0 0 0 2px #fff!important;z-index:9998!important}");
+        sb.append(".nb.sel{box-shadow:0 0 0 2px #f0f!important;z-index:9999!important}");
+        // tooltip
+        sb.append("#tip{display:none;position:fixed;background:#1c2128;border:1px solid #30363d;border-radius:6px;padding:5px 9px;font-size:10px;line-height:1.5;max-width:260px;pointer-events:none;z-index:99999;color:#e6edf3;word-break:break-all}");
+        sb.append("#tip b{color:#58a6ff}");
+        // detail panel
+        sb.append("#dp{width:268px;flex-shrink:0;border-left:1px solid #21262d;display:flex;flex-direction:column;overflow:hidden}");
+        sb.append("#dp-h{padding:8px 10px;font-size:10px;font-weight:700;color:#6e7681;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid #21262d;flex-shrink:0}");
+        sb.append("#dp-b{flex:1;overflow-y:auto;padding:8px 10px}");
+        sb.append(".dr{margin-bottom:7px}");
+        sb.append(".dk{font-size:9px;color:#6e7681;text-transform:uppercase;letter-spacing:.04em;margin-bottom:1px}");
+        sb.append(".dv{font-size:11px;color:#cdd9e5;word-break:break-all}");
+        sb.append(".df{display:inline-block;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;text-transform:uppercase;margin:1px 2px 1px 0}");
+        sb.append(".dfc{background:#1b3a6b;color:#58a6ff}");   // clickable - blue
+        sb.append(".dfl{background:#1b3052;color:#79c0ff}");   // longClickable - lighter blue
+        sb.append(".dfe{background:#1a3a2e;color:#3fb950}");   // editable - green
+        sb.append(".dfs{background:#3a2d0a;color:#d29922}");   // scrollable - amber
+        sb.append(".dff{background:#2d1f3d;color:#bc8cff}");   // focused/checked - purple
+        sb.append(".dfg{background:#1e2530;color:#8b949e}");   // generic - gray
+        sb.append(".dfr{background:#3d1a1a;color:#f85149}");   // warning (disabled) - red
+        // section headers inside detail panel
+        sb.append(".ds{font-size:9px;font-weight:700;color:#484f58;text-transform:uppercase;letter-spacing:.08em;padding:10px 0 4px;border-top:1px solid #21262d;margin-top:2px}");
+        sb.append(".ds:first-child{border-top:none;padding-top:2px}");
+        // flag rows (show all boolean properties with true/false value)
+        sb.append(".fr{display:flex;align-items:center;gap:0;padding:2px 0;line-height:1}");
+        sb.append(".fi{width:14px;font-size:9px;flex-shrink:0;text-align:center}");
+        sb.append(".fi-t{color:#3fb950}.fi-f{color:#30363d}.fi-w{color:#f85149}");
+        sb.append(".fn{font-size:11px;flex:1;color:#8b949e}");
+        sb.append(".fv-t{font-size:11px;color:#3fb950;font-weight:600}");
+        sb.append(".fv-f{font-size:11px;color:#30363d}");
+        sb.append(".fv-w{font-size:11px;color:#f85149;font-weight:600}");
+        sb.append("#dp-empty{color:#484f58;padding:16px;font-size:11px;line-height:1.6}");
+        sb.append("</style></head><body>");
+
+        // ── Topbar ────────────────────────────────────────────────────────────────
+        sb.append("<div id=\"tb\">");
+        sb.append("<h1>Orb Eye</h1>");
+        sb.append("<span style=\"color:#484f58;font-size:14px\">\u2022</span>");
+        sb.append("<span style=\"color:#e6edf3;font-size:12px;font-weight:600\">Layout</span>");
+        sb.append("<span class=\"tbg\">").append(nodes.length()).append(" nodes</span>");
+        sb.append("<span class=\"tbg\">").append(sw).append("\u00d7").append(sh).append("</span>");
+        if (filterPkg != null && !filterPkg.isEmpty()) {
+            sb.append("<span class=\"tbg\">").append(escapeHtml(filterPkg)).append("</span>");
+        }
+        sb.append("<span style=\"flex:1\"></span>");
+        sb.append("<a href=\"/inspect?format=html\" class=\"tbn\">\u2190 Tree</a>");
+        sb.append("</div>");
+
+        // ── App shell ─────────────────────────────────────────────────────────────
+        sb.append("<div id=\"app\">");
+
+        // ── Pre-compute tree prefixes (DFS continuation algorithm) ────────────────
+        int nn = nodes.length();
+        int[] depths     = new int[nn];
+        String[] paths   = new String[nn];
+        boolean[] isLast = new boolean[nn];
+        String[] treePfx = new String[nn];
+
+        for (int i = 0; i < nn; i++) {
+            depths[i] = nodes.getJSONObject(i).optInt("depth", 0);
+            paths[i]  = nodes.getJSONObject(i).optString("path", "");
+        }
+        // isLast[i]: no sibling of node i appears later in the DFS list
+        for (int i = 0; i < nn; i++) {
+            String pp = paths[i].contains(".") ? paths[i].substring(0, paths[i].lastIndexOf('.')) : "";
+            boolean last = true;
+            for (int j = i + 1; j < nn; j++) {
+                if (depths[j] < depths[i]) break;           // ascended past parent → done
+                if (depths[j] == depths[i]) {
+                    String jp = paths[j].contains(".") ? paths[j].substring(0, paths[j].lastIndexOf('.')) : "";
+                    if (jp.equals(pp)) { last = false; break; }
+                }
+            }
+            isLast[i] = last;
+        }
+        // Build tree-char prefix for each node using continuing[] stack
+        int maxD = 0;
+        for (int d : depths) if (d > maxD) maxD = d;
+        boolean[] cont = new boolean[maxD + 2]; // cont[k] = ancestor at depth k still has siblings below
+        for (int i = 0; i < nn; i++) {
+            int d = depths[i];
+            StringBuilder pfx = new StringBuilder();
+            for (int k = 0; k < d; k++) {
+                pfx.append(cont[k] ? "\u2502   " : "    "); // │   or space
+            }
+            if (d > 0) {
+                pfx.append(isLast[i] ? "\u2514\u2500\u2500 " : "\u251c\u2500\u2500 "); // └── or ├──
+            }
+            treePfx[i] = pfx.toString();
+            cont[d] = !isLast[i];
+        }
+
+        // ── Sidebar ───────────────────────────────────────────────────────────────
+        sb.append("<div id=\"sb\"><div id=\"sb-top\">");
+        sb.append("<input id=\"q\" placeholder=\"Filter nodes\u2026\" /></div>");
+        sb.append("<div id=\"nl\">");
+        for (int i = 0; i < nn; i++) {
+            JSONObject n = nodes.getJSONObject(i);
+            String text   = n.optString("text", "");
+            String desc   = n.optString("desc", "");
+            String nodeId = n.optString("id", "");
+            String cls    = n.optString("class", "");
+            boolean clickable  = n.optBoolean("clickable", false);
+            boolean editable   = n.optBoolean("editable", false);
+            boolean scrollable = n.optBoolean("scrollable", false);
+
+            String shortId  = nodeId.contains("/") ? nodeId.substring(nodeId.lastIndexOf('/') + 1) : nodeId;
+            String shortCls = cls.contains(".")    ? cls.substring(cls.lastIndexOf('.') + 1)         : cls;
+            String lbl = !text.isEmpty() ? text : (!desc.isEmpty() ? desc : (!shortId.isEmpty() ? shortId : shortCls));
+            lbl = shortenInspectorText(lbl, 30);
+
+            String dotColor = editable ? "#10b981" : clickable ? "#3b82f6" : scrollable ? "#f59e0b" : "#4b5563";
+            String flagStr  = (clickable ? "C" : "") + (editable ? "E" : "") + (scrollable ? "S" : "");
+
+            // Split prefix into guide part (│ / spaces) and connector (├── / └──)
+            // Last 4 chars of prefix (if depth>0) are the connector; the rest are guides
+            String pfx = treePfx[i];
+            String guides = "", connector = "";
+            if (!pfx.isEmpty() && pfx.length() >= 4) {
+                guides    = pfx.substring(0, pfx.length() - 4);
+                connector = pfx.substring(pfx.length() - 4);
+            }
+
+            sb.append("<div class=\"ni\" data-i=\"").append(i).append("\">");
+            if (!guides.isEmpty())    sb.append("<span class=\"tp\">").append(escapeHtml(guides)).append("</span>");
+            if (!connector.isEmpty()) sb.append("<span class=\"tp tpc\">").append(escapeHtml(connector)).append("</span>");
+            sb.append("<span class=\"d\" style=\"background:").append(dotColor).append("\"></span>");
+            sb.append("<span class=\"lbl\">").append(escapeHtml(lbl)).append("</span>");
+            if (!flagStr.isEmpty()) sb.append("<span class=\"fg\">").append(flagStr).append("</span>");
+            sb.append("</div>");
+        }
+        sb.append("</div></div>"); // end #nl, #sb
+
+        // resize handle between sidebar and canvas
+        sb.append("<div id=\"rsz\"></div>");
+
+        // ── Canvas ────────────────────────────────────────────────────────────────
+        sb.append("<div id=\"cv\"><span id=\"hint\"></span>");
+        sb.append("<div id=\"pw\"><div id=\"ps\" style=\"width:").append(sw).append("px;height:").append(sh).append("px\">");
+        sb.append("<img id=\"bg\" alt=\"\" />");
+
+        for (int i = 0; i < nn; i++) {
+            JSONObject n = nodes.getJSONObject(i);
+            int left  = n.optInt("left",   0);
+            int top   = n.optInt("top",    0);
+            int right = n.optInt("right",  0);
+            int bot   = n.optInt("bottom", 0);
+            int w = right - left;
+            int h = bot   - top;
+            if (w <= 0 || h <= 0) continue;
+
+            int depth      = n.optInt("depth", 0);
+            boolean click  = n.optBoolean("clickable",  false);
+            boolean edit   = n.optBoolean("editable",   false);
+            boolean scroll = n.optBoolean("scrollable", false);
+            int childCount = n.optInt("childCount", 0);
+
+            String typeCls = edit ? "ne" : click ? "nc" : scroll ? "ns" : childCount > 0 ? "nk" : "nl2";
+
+            sb.append("<div class=\"nb ").append(typeCls)
+              .append("\" data-i=\"").append(i)
+              .append("\" style=\"left:").append(left).append("px;top:").append(top)
+              .append("px;width:").append(w).append("px;height:").append(h)
+              .append("px;z-index:").append(depth).append("\"></div>");
+        }
+
+        sb.append("</div></div></div>"); // end #ps, #pw, #cv
+
+        // ── Detail panel ─────────────────────────────────────────────────────────
+        sb.append("<div id=\"dp\"><div id=\"dp-h\">Inspector</div>");
+        sb.append("<div id=\"dp-b\"><div id=\"dp-empty\">Click a node<br>to inspect it</div></div>");
+        sb.append("</div>");
+
+        // ── Tooltip ───────────────────────────────────────────────────────────────
+        sb.append("<div id=\"tip\"></div>");
+
+        sb.append("</div>"); // end #app
+
+        // ── Script ───────────────────────────────────────────────────────────────
+        sb.append("<script>");
+        sb.append("var N=").append(nodes.toString()).append(";");
+        sb.append("var SW=").append(sw).append(",SH=").append(sh).append(",cur=-1;");
+
+        // Scale phone screen to fit canvas
+        sb.append("function rescale(){");
+        sb.append("var c=document.getElementById('cv');");
+        sb.append("var pw=document.getElementById('pw');");
+        sb.append("var aw=c.clientWidth-24,ah=c.clientHeight-24;");
+        sb.append("var s=Math.min(aw/SW,ah/SH);if(s<=0)s=0.1;");
+        sb.append("pw.style.transform='scale('+s+')';");
+        sb.append("pw.style.width=SW+'px';pw.style.height=SH+'px';");
+        sb.append("document.getElementById('hint').textContent=Math.round(s*100)+'%';");
+        sb.append("}");
+        sb.append("window.addEventListener('resize',rescale);rescale();");
+        // Sidebar resize handle
+        sb.append("(function(){");
+        sb.append("var rsz=document.getElementById('rsz');");
+        sb.append("var sbar=document.getElementById('sb');");
+        sb.append("var dragging=false,startX=0,startW=0;");
+        sb.append("rsz.addEventListener('mousedown',function(e){");
+        sb.append("dragging=true;startX=e.clientX;startW=sbar.offsetWidth;");
+        sb.append("rsz.classList.add('rz');");
+        sb.append("document.body.style.userSelect='none';");
+        sb.append("document.body.style.cursor='col-resize';");
+        sb.append("e.preventDefault();");
+        sb.append("});");
+        sb.append("window.addEventListener('mousemove',function(e){");
+        sb.append("if(!dragging)return;");
+        sb.append("var w=Math.max(140,Math.min(520,startW+e.clientX-startX));");
+        sb.append("sbar.style.width=w+'px';");
+        sb.append("});");
+        sb.append("window.addEventListener('mouseup',function(){");
+        sb.append("if(!dragging)return;");
+        sb.append("dragging=false;rsz.classList.remove('rz');");
+        sb.append("document.body.style.userSelect='';");
+        sb.append("document.body.style.cursor='';");
+        sb.append("rescale();");
+        sb.append("});");
+        sb.append("})();");
+
+        // Load screenshot as background
+        sb.append("fetch('/screenshot').then(function(r){return r.json();}).then(function(d){");
+        sb.append("if(d&&d.image){var bg=document.getElementById('bg');bg.src=d.image;bg.onload=function(){bg.classList.add('loaded');};}");
+        sb.append("}).catch(function(){});");
+
+        // Select node (from canvas click or sidebar click)
+        sb.append("function sel(i){");
+        sb.append("if(cur>=0){");
+        sb.append("var pb=document.querySelector('.nb.sel');if(pb)pb.classList.remove('sel');");
+        sb.append("var pl=document.querySelector('.ni.sel');if(pl)pl.classList.remove('sel');");
+        sb.append("}");
+        sb.append("cur=i;");
+        sb.append("var nb=document.querySelector('.nb[data-i=\"'+i+'\"]');if(nb)nb.classList.add('sel');");
+        sb.append("var li=document.querySelector('.ni[data-i=\"'+i+'\"]');");
+        sb.append("if(li){li.classList.add('sel');li.scrollIntoView({block:'nearest'});}");
+        sb.append("renderDetail(i);");
+        sb.append("}");
+
+        // Event delegation: canvas clicks + sidebar clicks
+        sb.append("document.getElementById('ps').addEventListener('click',function(e){");
+        sb.append("var t=e.target.closest('.nb');if(t)sel(+t.dataset.i);");
+        sb.append("});");
+        sb.append("document.getElementById('nl').addEventListener('click',function(e){");
+        sb.append("var t=e.target.closest('.ni');if(t)sel(+t.dataset.i);");
+        sb.append("});");
+
+        // Tooltip via event delegation
+        sb.append("var tip=document.getElementById('tip');");
+        sb.append("document.getElementById('ps').addEventListener('mouseover',function(e){");
+        sb.append("var t=e.target.closest('.nb');if(!t){tip.style.display='none';return;}");
+        sb.append("var n=N[+t.dataset.i];if(!n)return;");
+        sb.append("var cls=n['class']||'';cls=cls.substring(cls.lastIndexOf('.')+1);");
+        sb.append("var lbl=n.text||n.desc||n.id||'';if(lbl.length>50)lbl=lbl.substring(0,50)+'...';");
+        sb.append("tip.innerHTML='<b>'+eh(cls)+'</b>'+(lbl?'<br>'+eh(lbl):'')+'<br><span style=\"color:#6e7681\">'+eh(n.bounds||'')+'</span>';");
+        sb.append("tip.style.display='block';");
+        sb.append("});");
+        sb.append("document.getElementById('ps').addEventListener('mouseout',function(e){");
+        sb.append("if(!e.relatedTarget||!e.relatedTarget.closest('.nb'))tip.style.display='none';");
+        sb.append("});");
+        sb.append("window.addEventListener('mousemove',function(e){");
+        sb.append("if(tip.style.display!=='none'){tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-8)+'px';}");
+        sb.append("});");
+
+        // Render detail panel - full property display
+        sb.append("function row(k,v){");
+        sb.append("if(v===undefined||v===null||v==='')return'';");
+        sb.append("return'<div class=\"dr\"><div class=\"dk\">'+k+'</div><div class=\"dv\">'+eh(String(v))+'</div></div>';");
+        sb.append("}");
+        sb.append("function renderDetail(i){");
+        sb.append("var n=N[i],b=document.getElementById('dp-b');");
+        sb.append("if(!n){b.innerHTML='<div id=\"dp-empty\">No data</div>';return;}");
+        sb.append("var h='';");
+        // ── Identity
+        sb.append("h+='<div class=\"ds\">Identity</div>';");
+        sb.append("var fullCls=n['class']||'';");
+        sb.append("var shortCls=fullCls.substring(fullCls.lastIndexOf('.')+1);");
+        sb.append("h+=row('class',shortCls+(shortCls!==fullCls?' ('+fullCls+')':''));");
+        sb.append("h+=row('id',n.id);");
+        sb.append("h+=row('pkg',n.pkg);");
+        // ── Content
+        sb.append("if(n.text||n.desc){");
+        sb.append("h+='<div class=\"ds\">Content</div>';");
+        sb.append("h+=row('text',n.text);");
+        sb.append("h+=row('desc',n.desc);");
+        sb.append("}");
+        // ── Position
+        sb.append("h+='<div class=\"ds\">Position</div>';");
+        sb.append("var w=(n.right||0)-(n.left||0),hh=(n.bottom||0)-(n.top||0);");
+        sb.append("h+=row('bounds','['+n.left+', '+n.top+'] \u2192 ['+n.right+', '+n.bottom+']');");
+        sb.append("h+=row('size',w+' \u00d7 '+hh);");
+        sb.append("h+=row('center',n.centerX+', '+n.centerY);");
+        // ── Flags: show every boolean with its actual true/false value
+        sb.append("h+='<div class=\"ds\">Flags</div>';");
+        sb.append("function flag(name,val,warn){");
+        sb.append("var ic=warn?(val?'fi-t':'fi-w'):(val?'fi-t':'fi-f');");
+        sb.append("var vc=warn?(val?'fv-t':'fv-w'):(val?'fv-t':'fv-f');");
+        sb.append("var dot=val?'\u25cf':'\u25cb';");  // ● true, ○ false
+        sb.append("return'<div class=\"fr\"><span class=\"fi '+ic+'\">'+dot+'</span>'");
+        sb.append("+'<span class=\"fn\">'+name+'</span>'");
+        sb.append("+'<span class=\"'+vc+'\">'+val+'</span></div>';");
+        sb.append("}");
+        sb.append("h+=flag('enabled',      n.enabled,      true);");   // warn when false
+        sb.append("h+=flag('clickable',    n.clickable,    false);");
+        sb.append("h+=flag('longClickable',n.longClickable,false);");
+        sb.append("h+=flag('editable',     n.editable,     false);");
+        sb.append("h+=flag('scrollable',   n.scrollable,   false);");
+        sb.append("h+=flag('focusable',    n.focusable,    false);");
+        sb.append("h+=flag('focused',      n.focused,      false);");
+        sb.append("h+=flag('selected',     n.selected,     false);");
+        sb.append("h+=flag('checkable',    n.checkable,    false);");
+        sb.append("h+=flag('checked',      n.checked,      false);");
+        sb.append("h+=flag('visibleToUser',n.visibleToUser,false);");
+        // ── Tree
+        sb.append("h+='<div class=\"ds\">Tree</div>';");
+        sb.append("h+=row('depth',n.depth);");
+        sb.append("h+=row('path',n.path);");
+        sb.append("h+=row('indexInParent',n.indexInParent);");
+        sb.append("h+=row('childCount',n.childCount);");
+        sb.append("b.innerHTML=h;");
+        sb.append("}");
+
+        // Search / filter sidebar
+        sb.append("document.getElementById('q').addEventListener('input',function(){");
+        sb.append("var q=this.value.toLowerCase();");
+        sb.append("document.querySelectorAll('.ni').forEach(function(el){");
+        sb.append("var n=N[+el.dataset.i];");
+        sb.append("var m=!q||(n.text&&n.text.toLowerCase().includes(q))");
+        sb.append("||(n.desc&&n.desc.toLowerCase().includes(q))");
+        sb.append("||(n.id&&n.id.toLowerCase().includes(q))");
+        sb.append("||(n['class']&&n['class'].toLowerCase().includes(q));");
+        sb.append("el.style.display=m?'':'none';");
+        sb.append("});");
+        sb.append("});");
+
+        // HTML escape helper
+        sb.append("function eh(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}");
+
+        sb.append("</script></body></html>");
+        return sb.toString();
+    }
+
+    private String renderInspectHtmlError(String message) {
+        String safe = escapeHtml(message != null ? message : "Unknown error");
+        return "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+                + "<title>Orb Eye Inspect</title>"
+                + "<style>body{font-family:ui-monospace,Menlo,Consolas,monospace;background:#0f1115;color:#e6edf3;padding:24px;} .err{color:#ff8b8b;}</style>"
+                + "</head><body><h1>Orb Eye /inspect (HTML)</h1><div class=\"err\">" + safe + "</div></body></html>";
+    }
+
+    private String escapeHtml(String raw) {
+        if (raw == null || raw.isEmpty()) return "";
+        StringBuilder out = new StringBuilder(raw.length() + 16);
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            switch (ch) {
+                case '&':
+                    out.append("&amp;");
+                    break;
+                case '<':
+                    out.append("&lt;");
+                    break;
+                case '>':
+                    out.append("&gt;");
+                    break;
+                case '"':
+                    out.append("&quot;");
+                    break;
+                case '\'':
+                    out.append("&#39;");
+                    break;
+                default:
+                    out.append(ch);
+                    break;
+            }
+        }
+        return out.toString();
     }
 
     private void collectInspectNodes(
@@ -2712,6 +3330,371 @@ public class OrbAccessibilityService extends AccessibilityService {
     // ===== Screen Elements (v2.1 enhanced) =====
 
     /**
+     * GET /summary — high-level RPA-oriented screen snapshot.
+     * Query params:
+     *   package=xxx  — optional package filter (for split-screen scenarios)
+     *   top=6        — max number of top_clickables (1..20)
+     *   inputs=6     — max number of input_fields (1..20)
+     */
+    private String getScreenSummary(String query) throws Exception {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return errorJson("No active window", "NOT_FOUND");
+
+        try {
+            String filterPkg = getQueryParam(query, "package");
+            int topLimit = clampInt(getQueryInt(query, "top", 6), 1, 20);
+            int inputLimit = clampInt(getQueryInt(query, "inputs", 6), 1, 20);
+
+            ArrayList<ScreenSummaryNode> nodes = new ArrayList<>();
+            collectScreenSummaryNodes(root, nodes, filterPkg, false, 0);
+
+            int interactiveCount = 0;
+            int textCount = 0;
+            int scrollContainers = 0;
+            String packageName = "";
+            for (ScreenSummaryNode node : nodes) {
+                if (packageName.isEmpty() && node.pkg != null && !node.pkg.isEmpty()) {
+                    packageName = node.pkg;
+                }
+                if (node.visible && node.enabled && (node.clickable || node.longClickable || node.editable)) {
+                    interactiveCount++;
+                }
+                if (node.visible && ((!node.text.isEmpty()) || (!node.desc.isEmpty()))) {
+                    textCount++;
+                }
+                if (node.visible && node.scrollable) {
+                    scrollContainers++;
+                }
+            }
+            if (packageName.isEmpty()) {
+                packageName = lastWindowPackage != null ? lastWindowPackage : "";
+            }
+
+            String activity = (lastWindowClass != null && !lastWindowClass.isEmpty())
+                    ? lastWindowClass
+                    : (!nodes.isEmpty() ? nodes.get(0).className : "");
+
+            JSONObject result = new JSONObject();
+            result.put("ok", true);
+            result.put("package", packageName);
+            result.put("activity", activity);
+            result.put("title", detectScreenTitle(nodes));
+            result.put("interactive_count", interactiveCount);
+            result.put("text_count", textCount);
+            result.put("scroll_containers", scrollContainers);
+            result.put("top_clickables", buildSummaryTopClickables(nodes, topLimit));
+            result.put("input_fields", buildSummaryInputFields(nodes, inputLimit));
+            return result.toString();
+        } finally {
+            root.recycle();
+        }
+    }
+
+    private void collectScreenSummaryNodes(
+            AccessibilityNodeInfo node,
+            List<ScreenSummaryNode> out,
+            String filterPkg,
+            boolean insideScrollable,
+            int depth
+    ) {
+        if (node == null) return;
+
+        String pkg = node.getPackageName() != null ? node.getPackageName().toString() : "";
+        boolean nowInsideScrollable = insideScrollable || node.isScrollable();
+        boolean packageMatch = filterPkg == null || filterPkg.isEmpty() || filterPkg.equals(pkg);
+
+        if (packageMatch) {
+            Rect bounds = new Rect();
+            node.getBoundsInScreen(bounds);
+            CharSequence hintCs = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                hintCs = node.getHintText();
+            }
+            out.add(new ScreenSummaryNode(
+                    pkg,
+                    node.getClassName() != null ? node.getClassName().toString() : "",
+                    node.getViewIdResourceName() != null ? node.getViewIdResourceName() : "",
+                    node.getText() != null ? node.getText().toString() : "",
+                    node.getContentDescription() != null ? node.getContentDescription().toString() : "",
+                    hintCs != null ? hintCs.toString() : "",
+                    node.isClickable(),
+                    node.isLongClickable(),
+                    node.isEditable(),
+                    node.isScrollable(),
+                    node.isEnabled(),
+                    node.isVisibleToUser(),
+                    nowInsideScrollable,
+                    node.getChildCount(),
+                    depth,
+                    bounds
+            ));
+        }
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child == null) continue;
+            try {
+                collectScreenSummaryNodes(child, out, filterPkg, nowInsideScrollable, depth + 1);
+            } finally {
+                child.recycle();
+            }
+        }
+    }
+
+    private String detectScreenTitle(List<ScreenSummaryNode> nodes) {
+        if (nodes == null || nodes.isEmpty()) return "";
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+
+        String bestTitle = "";
+        int bestScore = Integer.MIN_VALUE;
+        for (ScreenSummaryNode node : nodes) {
+            if (!node.visible) continue;
+            String text = node.text != null ? node.text.trim() : "";
+            if (text.isEmpty() || text.length() > 40) continue;
+
+            int score = 0;
+            int cy = node.bounds.centerY();
+            if (cy <= screenHeight * 0.20f) score += 48;
+            else if (cy <= screenHeight * 0.35f) score += 34;
+            else if (cy <= screenHeight * 0.50f) score += 10;
+
+            if (containsIgnoreCase(node.className, "TextView")) score += 10;
+            if (!node.clickable && !node.editable) score += 8;
+            if (node.depth <= 6) score += 6;
+            if (node.bounds.width() >= screenWidth * 0.25f) score += 10;
+
+            int len = text.length();
+            if (len >= 2 && len <= 14) score += 20;
+            else if (len <= 24) score += 10;
+            else score -= 8;
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestTitle = text;
+            }
+        }
+
+        if (!bestTitle.isEmpty()) {
+            return shortenInspectorText(bestTitle, 36);
+        }
+
+        for (ScreenSummaryNode node : nodes) {
+            String text = node.text != null ? node.text.trim() : "";
+            if (!text.isEmpty()) return shortenInspectorText(text, 36);
+        }
+        return "";
+    }
+
+    private JSONArray buildSummaryTopClickables(List<ScreenSummaryNode> nodes, int limit) throws Exception {
+        ArrayList<ScreenSummaryNode> candidates = new ArrayList<>();
+        for (ScreenSummaryNode node : nodes) {
+            if (!node.visible || !node.enabled) continue;
+            if (!(node.clickable || node.longClickable)) continue;
+            String label = getSummaryNodeLabel(node);
+            if (label.isEmpty() && (node.id == null || node.id.isEmpty())) continue;
+            candidates.add(node);
+        }
+
+        final int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        Collections.sort(candidates, (a, b) -> Integer.compare(
+                scoreSummaryClickableNode(b, screenHeight),
+                scoreSummaryClickableNode(a, screenHeight)
+        ));
+
+        JSONArray out = new JSONArray();
+        Set<String> seen = new HashSet<>();
+        for (ScreenSummaryNode node : candidates) {
+            if (out.length() >= limit) break;
+            String dedupeKey = buildSummaryDedupeKey(node);
+            if (seen.contains(dedupeKey)) continue;
+            seen.add(dedupeKey);
+
+            JSONObject item = new JSONObject();
+            item.put("text", getSummaryNodeLabel(node));
+            item.put("id", node.id != null ? node.id : "");
+            item.put("bounds", rectToArray(node.bounds));
+            item.put("centerX", node.bounds.centerX());
+            item.put("centerY", node.bounds.centerY());
+            out.put(item);
+        }
+        return out;
+    }
+
+    private JSONArray buildSummaryInputFields(List<ScreenSummaryNode> nodes, int limit) throws Exception {
+        ArrayList<ScreenSummaryNode> candidates = new ArrayList<>();
+        for (ScreenSummaryNode node : nodes) {
+            if (!node.visible || !node.enabled) continue;
+            boolean isInput = node.editable
+                    || containsIgnoreCase(node.className, "EditText")
+                    || containsIgnoreCase(node.className, "TextInput");
+            if (!isInput) continue;
+            candidates.add(node);
+        }
+
+        Collections.sort(candidates, (a, b) -> Integer.compare(
+                scoreSummaryInputNode(b),
+                scoreSummaryInputNode(a)
+        ));
+
+        JSONArray out = new JSONArray();
+        Set<String> seen = new HashSet<>();
+        for (ScreenSummaryNode node : candidates) {
+            if (out.length() >= limit) break;
+            String dedupeKey = buildSummaryDedupeKey(node);
+            if (seen.contains(dedupeKey)) continue;
+            seen.add(dedupeKey);
+
+            JSONObject item = new JSONObject();
+            item.put("hint", getSummaryInputHint(node));
+            item.put("id", node.id != null ? node.id : "");
+            item.put("bounds", rectToArray(node.bounds));
+            item.put("centerX", node.bounds.centerX());
+            item.put("centerY", node.bounds.centerY());
+            out.put(item);
+        }
+        return out;
+    }
+
+    private int scoreSummaryClickableNode(ScreenSummaryNode node, int screenHeight) {
+        if (node == null) return Integer.MIN_VALUE;
+        int score = 0;
+        if (node.visible) score += 40;
+        if (node.enabled) score += 25;
+        if (node.clickable) score += 20;
+        if (node.longClickable) score += 6;
+        if (!node.text.isEmpty()) score += 40;
+        else if (!node.desc.isEmpty()) score += 28;
+        else if (!node.id.isEmpty()) score += 15;
+        if (node.childCount == 0) score += 15;
+        if (node.insideScrollable) score += 4;
+        if (node.bounds.centerY() > screenHeight * 0.60f) score += 8;
+        long area = Math.max(1L, (long) node.bounds.width() * (long) node.bounds.height());
+        score -= (int) Math.min(30L, area / 60000L);
+        return score;
+    }
+
+    private int scoreSummaryInputNode(ScreenSummaryNode node) {
+        if (node == null) return Integer.MIN_VALUE;
+        int score = 0;
+        if (node.visible) score += 30;
+        if (node.enabled) score += 20;
+        if (node.editable) score += 25;
+        if (!node.hint.isEmpty()) score += 30;
+        else if (!node.desc.isEmpty()) score += 15;
+        else if (!node.text.isEmpty()) score += 10;
+        if (!node.id.isEmpty()) score += 8;
+        if (node.childCount == 0) score += 6;
+        return score;
+    }
+
+    private String getSummaryNodeLabel(ScreenSummaryNode node) {
+        if (node == null) return "";
+        if (node.text != null && !node.text.trim().isEmpty()) {
+            return shortenInspectorText(node.text.trim(), 24);
+        }
+        if (node.desc != null && !node.desc.trim().isEmpty()) {
+            return shortenInspectorText(node.desc.trim(), 24);
+        }
+        return getSummaryShortId(node.id);
+    }
+
+    private String getSummaryInputHint(ScreenSummaryNode node) {
+        if (node == null) return "";
+        if (node.hint != null && !node.hint.trim().isEmpty()) {
+            return shortenInspectorText(node.hint.trim(), 24);
+        }
+        if (node.desc != null && !node.desc.trim().isEmpty()) {
+            return shortenInspectorText(node.desc.trim(), 24);
+        }
+        if (node.text != null && !node.text.trim().isEmpty()) {
+            return shortenInspectorText(node.text.trim(), 24);
+        }
+        return "";
+    }
+
+    private String getSummaryShortId(String id) {
+        if (id == null || id.isEmpty()) return "";
+        int slash = id.lastIndexOf('/');
+        String shortId = (slash >= 0 && slash + 1 < id.length()) ? id.substring(slash + 1) : id;
+        return shortenInspectorText(shortId, 24);
+    }
+
+    private String buildSummaryDedupeKey(ScreenSummaryNode node) {
+        if (node == null) return "";
+        return (node.id != null ? node.id : "")
+                + "|"
+                + (node.text != null ? node.text : "")
+                + "|"
+                + node.bounds.flattenToString();
+    }
+
+    private JSONArray rectToArray(Rect bounds) throws Exception {
+        JSONArray arr = new JSONArray();
+        if (bounds == null) return arr;
+        arr.put(bounds.left);
+        arr.put(bounds.top);
+        arr.put(bounds.right);
+        arr.put(bounds.bottom);
+        return arr;
+    }
+
+    private static class ScreenSummaryNode {
+        final String pkg;
+        final String className;
+        final String id;
+        final String text;
+        final String desc;
+        final String hint;
+        final boolean clickable;
+        final boolean longClickable;
+        final boolean editable;
+        final boolean scrollable;
+        final boolean enabled;
+        final boolean visible;
+        final boolean insideScrollable;
+        final int childCount;
+        final int depth;
+        final Rect bounds;
+
+        ScreenSummaryNode(
+                String pkg,
+                String className,
+                String id,
+                String text,
+                String desc,
+                String hint,
+                boolean clickable,
+                boolean longClickable,
+                boolean editable,
+                boolean scrollable,
+                boolean enabled,
+                boolean visible,
+                boolean insideScrollable,
+                int childCount,
+                int depth,
+                Rect bounds
+        ) {
+            this.pkg = pkg != null ? pkg : "";
+            this.className = className != null ? className : "";
+            this.id = id != null ? id : "";
+            this.text = text != null ? text : "";
+            this.desc = desc != null ? desc : "";
+            this.hint = hint != null ? hint : "";
+            this.clickable = clickable;
+            this.longClickable = longClickable;
+            this.editable = editable;
+            this.scrollable = scrollable;
+            this.enabled = enabled;
+            this.visible = visible;
+            this.insideScrollable = insideScrollable;
+            this.childCount = childCount;
+            this.depth = depth;
+            this.bounds = bounds != null ? new Rect(bounds) : new Rect();
+        }
+    }
+
+    /**
      * GET /screen — flat list of elements with optional filters.
      * Query params:
      *   scrollable=true   — only elements inside a scrollable container
@@ -2738,6 +3721,262 @@ public class OrbAccessibilityService extends AccessibilityService {
         result.put("ok", true);
         result.put("elements", elements);
         return result.toString();
+    }
+
+    /**
+     * GET/POST /enrich — merge accessibility nodes with OCR text by coordinates.
+     * Query/body params:
+     *   package=xxx, maxDepth=25, clickableOnly/textOnly/enabledOnly/visibleOnly/contains
+     *   engine=auto|mlkit|paddle
+     *   includeOcrLines=true   — include per-node raw OCR matches
+     *   includeUnmatched=true  — include OCR lines that could not be mapped
+     */
+    private String handleEnrich(String query, JSONObject body) throws Exception {
+        long startedAt = System.currentTimeMillis();
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return errorJson("No active window", "NOT_FOUND");
+
+        Bitmap source = null;
+        try {
+            String filterPkg = getBodyString(body, "package", getQueryParam(query, "package"));
+            int maxDepth = clampInt(getBodyInt(body, "maxDepth", getQueryInt(query, "maxDepth", 25)), 0, 60);
+            boolean clickableOnly = getBodyBoolean(body, "clickableOnly",
+                    getQueryBoolean(query, "clickableOnly", false) || getQueryBoolean(query, "clickable", false));
+            boolean textOnly = getBodyBoolean(body, "textOnly", getQueryBoolean(query, "textOnly", false));
+            boolean enabledOnly = getBodyBoolean(body, "enabledOnly", getQueryBoolean(query, "enabledOnly", false));
+            boolean visibleOnly = getBodyBoolean(body, "visibleOnly", getQueryBoolean(query, "visibleOnly", false));
+            String contains = getBodyString(body, "contains", getQueryParam(query, "contains"));
+            boolean includeOcrLines = getBodyBoolean(body, "includeOcrLines", getQueryBoolean(query, "includeOcrLines", true));
+            boolean includeUnmatched = getBodyBoolean(body, "includeUnmatched", getQueryBoolean(query, "includeUnmatched", true));
+
+            String rawEngine = getBodyString(body, "engine", getQueryParam(query, "engine"));
+            String requestedEngine = normalizeOcrEngine(rawEngine != null && !rawEngine.isEmpty() ? rawEngine : OCR_ENGINE_AUTO);
+
+            JSONArray nodes = new JSONArray();
+            collectInspectNodes(root, nodes,
+                    filterPkg, maxDepth,
+                    clickableOnly, textOnly, enabledOnly, visibleOnly, contains,
+                    0, -1, "0");
+
+            source = captureScreenshotBitmap();
+            if (source == null) {
+                return errorJson("OCR input image unavailable", "ENRICH_FAILED");
+            }
+
+            OcrRunResult ocrResult = runOcrWithEngine(source, requestedEngine);
+            List<OcrLineData> lines = ocrResult.lines != null ? ocrResult.lines : new ArrayList<>();
+
+            ArrayList<EnrichNodeRef> nodeRefs = new ArrayList<>();
+            for (int i = 0; i < nodes.length(); i++) {
+                JSONObject node = nodes.getJSONObject(i);
+                node.put("ocr_text", "");
+                node.put("ocr_match_count", 0);
+                if (includeOcrLines) {
+                    node.put("ocr_lines", new JSONArray());
+                }
+
+                int left = node.optInt("left", Integer.MIN_VALUE);
+                int top = node.optInt("top", Integer.MIN_VALUE);
+                int right = node.optInt("right", Integer.MIN_VALUE);
+                int bottom = node.optInt("bottom", Integer.MIN_VALUE);
+                if (left == Integer.MIN_VALUE || top == Integer.MIN_VALUE
+                        || right == Integer.MIN_VALUE || bottom == Integer.MIN_VALUE
+                        || right <= left || bottom <= top) {
+                    continue;
+                }
+                nodeRefs.add(new EnrichNodeRef(
+                        i,
+                        new Rect(left, top, right, bottom),
+                        node.optInt("depth", 0)
+                ));
+            }
+
+            JSONArray unmatched = new JSONArray();
+            int matchedOcrCount = 0;
+            for (int i = 0; i < lines.size(); i++) {
+                OcrLineData line = lines.get(i);
+                if (line == null || line.bounds == null) continue;
+
+                JSONObject lineJson = lineToJson(line, 0, 0);
+                lineJson.put("index", i);
+
+                Rect lineRect = new Rect(
+                        lineJson.optInt("left", line.bounds.left),
+                        lineJson.optInt("top", line.bounds.top),
+                        lineJson.optInt("right", line.bounds.right),
+                        lineJson.optInt("bottom", line.bounds.bottom)
+                );
+                int centerX = lineJson.optInt("centerX", lineRect.centerX());
+                int centerY = lineJson.optInt("centerY", lineRect.centerY());
+
+                int nodeIndex = findBestEnrichNodeIndex(nodeRefs, lineRect, centerX, centerY);
+                if (nodeIndex >= 0) {
+                    JSONObject node = nodes.getJSONObject(nodeIndex);
+                    int matchedCount = node.optInt("ocr_match_count", 0) + 1;
+                    node.put("ocr_match_count", matchedCount);
+                    node.put("ocr_text", appendOcrText(node.optString("ocr_text", ""), lineJson.optString("text", "")));
+
+                    lineJson.put("nodePath", node.optString("path", ""));
+                    lineJson.put("nodeDepth", node.optInt("depth", 0));
+
+                    if (includeOcrLines) {
+                        JSONArray nodeLines = node.optJSONArray("ocr_lines");
+                        if (nodeLines == null) {
+                            nodeLines = new JSONArray();
+                            node.put("ocr_lines", nodeLines);
+                        }
+                        nodeLines.put(lineJson);
+                    }
+                    matchedOcrCount++;
+                } else if (includeUnmatched) {
+                    unmatched.put(lineJson);
+                }
+            }
+
+            int enrichedCount = 0;
+            for (int i = 0; i < nodes.length(); i++) {
+                JSONObject node = nodes.getJSONObject(i);
+                if (node.optInt("ocr_match_count", 0) > 0) {
+                    enrichedCount++;
+                }
+                String text = node.optString("text", "");
+                String effectiveText = (text != null && !text.isEmpty())
+                        ? text
+                        : node.optString("ocr_text", "");
+                node.put("text_effective", effectiveText);
+            }
+
+            JSONObject result = new JSONObject();
+            result.put("ok", true);
+            result.put("engine", ocrResult.engine);
+            result.put("requestedEngine", requestedEngine);
+            result.put("imageWidth", source.getWidth());
+            result.put("imageHeight", source.getHeight());
+            result.put("nodeCount", nodes.length());
+            result.put("ocrLineCount", lines.size());
+            result.put("matchedOcrCount", matchedOcrCount);
+            result.put("enrichedCount", enrichedCount);
+            if (includeUnmatched) {
+                result.put("unmatchedOcrCount", unmatched.length());
+                result.put("unmatched_ocr_lines", unmatched);
+            }
+            result.put("nodes", nodes);
+            result.put("elapsedMs", System.currentTimeMillis() - startedAt);
+            return result.toString();
+        } catch (Exception e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "Enrich failed";
+            if (msg.contains("API 30+")) return errorJson(msg, "NOT_SUPPORTED");
+            if (msg.contains("timed out")) return errorJson(msg, "TIMEOUT");
+            return errorJson(msg, "ENRICH_FAILED");
+        } finally {
+            root.recycle();
+            if (source != null && !source.isRecycled()) source.recycle();
+        }
+    }
+
+    private int findBestEnrichNodeIndex(List<EnrichNodeRef> nodeRefs, Rect ocrBounds, int centerX, int centerY) {
+        if (nodeRefs == null || nodeRefs.isEmpty() || ocrBounds == null) return -1;
+
+        int bestIndex = -1;
+        long bestArea = Long.MAX_VALUE;
+        int bestDepth = Integer.MIN_VALUE;
+        for (EnrichNodeRef ref : nodeRefs) {
+            if (ref == null || ref.bounds == null || !ref.bounds.contains(centerX, centerY)) continue;
+            if (ref.area < bestArea || (ref.area == bestArea && ref.depth > bestDepth)) {
+                bestIndex = ref.nodeIndex;
+                bestArea = ref.area;
+                bestDepth = ref.depth;
+            }
+        }
+        if (bestIndex >= 0) return bestIndex;
+
+        long lineArea = Math.max(1L, (long) ocrBounds.width() * (long) ocrBounds.height());
+        double bestScore = 0d;
+        bestArea = Long.MAX_VALUE;
+        bestDepth = Integer.MIN_VALUE;
+        for (EnrichNodeRef ref : nodeRefs) {
+            if (ref == null || ref.bounds == null) continue;
+            long overlap = intersectionArea(ref.bounds, ocrBounds);
+            if (overlap <= 0L) continue;
+            double score = overlap / (double) lineArea;
+            if (score > bestScore + 1e-9
+                    || (Math.abs(score - bestScore) <= 1e-9
+                    && (ref.area < bestArea || (ref.area == bestArea && ref.depth > bestDepth)))) {
+                bestIndex = ref.nodeIndex;
+                bestScore = score;
+                bestArea = ref.area;
+                bestDepth = ref.depth;
+            }
+        }
+        return bestIndex;
+    }
+
+    private long intersectionArea(Rect a, Rect b) {
+        if (a == null || b == null) return 0L;
+        int left = Math.max(a.left, b.left);
+        int top = Math.max(a.top, b.top);
+        int right = Math.min(a.right, b.right);
+        int bottom = Math.min(a.bottom, b.bottom);
+        if (right <= left || bottom <= top) return 0L;
+        return (long) (right - left) * (long) (bottom - top);
+    }
+
+    private String appendOcrText(String existing, String token) {
+        String normalizedExisting = existing != null ? existing.trim() : "";
+        String normalizedToken = token != null ? token.trim() : "";
+        if (normalizedToken.isEmpty()) return normalizedExisting;
+        if (normalizedExisting.isEmpty()) return normalizedToken;
+        if (normalizedExisting.endsWith(normalizedToken)) return normalizedExisting;
+        return normalizedExisting + " " + normalizedToken;
+    }
+
+    private String getBodyString(JSONObject body, String key, String defaultValue) {
+        if (body == null || key == null || key.isEmpty() || !body.has(key)) return defaultValue;
+        Object raw = body.opt(key);
+        if (raw == null || raw == JSONObject.NULL) return "";
+        return String.valueOf(raw);
+    }
+
+    private boolean getBodyBoolean(JSONObject body, String key, boolean defaultValue) {
+        if (body == null || key == null || key.isEmpty() || !body.has(key)) return defaultValue;
+        Object raw = body.opt(key);
+        if (raw == null || raw == JSONObject.NULL) return defaultValue;
+        if (raw instanceof Boolean) return (Boolean) raw;
+        if (raw instanceof Number) return ((Number) raw).intValue() != 0;
+        String str = String.valueOf(raw).trim();
+        if (str.isEmpty()) return defaultValue;
+        return "1".equals(str)
+                || "true".equalsIgnoreCase(str)
+                || "yes".equalsIgnoreCase(str)
+                || "y".equalsIgnoreCase(str);
+    }
+
+    private int getBodyInt(JSONObject body, String key, int defaultValue) {
+        if (body == null || key == null || key.isEmpty() || !body.has(key)) return defaultValue;
+        Object raw = body.opt(key);
+        if (raw == null || raw == JSONObject.NULL) return defaultValue;
+        if (raw instanceof Number) return ((Number) raw).intValue();
+        String str = String.valueOf(raw).trim();
+        if (str.isEmpty()) return defaultValue;
+        try {
+            return Integer.parseInt(str);
+        } catch (Exception ignored) {
+            return defaultValue;
+        }
+    }
+
+    private static class EnrichNodeRef {
+        final int nodeIndex;
+        final Rect bounds;
+        final long area;
+        final int depth;
+
+        EnrichNodeRef(int nodeIndex, Rect bounds, int depth) {
+            this.nodeIndex = nodeIndex;
+            this.bounds = bounds != null ? new Rect(bounds) : new Rect();
+            this.area = Math.max(1L, (long) this.bounds.width() * (long) this.bounds.height());
+            this.depth = depth;
+        }
     }
 
     /**
@@ -3109,6 +4348,8 @@ public class OrbAccessibilityService extends AccessibilityService {
      * Optional:
      *   "clickable": true            — only return clickable nodes
      *   "index": N                   — return Nth match (0-based, default 0)
+     *   "fuzzy": true                — enable fuzzy fallback with scored candidates
+     *   "candidates": 5              — max candidate hints when not found (0..20)
      *
      * Returns the matched element with centerX/centerY ready for /tap.
      */
@@ -3117,83 +4358,634 @@ public class OrbAccessibilityService extends AccessibilityService {
         String desc = body.optString("desc", "");
         String id = body.optString("id", "");
         boolean onlyClickable = body.optBoolean("clickable", false);
+        boolean fuzzy = body.optBoolean("fuzzy", false);
         int index = body.optInt("index", 0);
+        int candidateLimit = clampInt(body.optInt("candidates", 5), 0, 20);
 
         if (text.isEmpty() && desc.isEmpty() && id.isEmpty()) {
             return errorJson("Provide 'text', 'desc', or 'id'", "INVALID_ARGS");
         }
 
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return errorJson("No active window", "NOT_FOUND");
-
-        List<AccessibilityNodeInfo> candidates = new ArrayList<>();
-
+        String queryType;
+        String query;
         if (!text.isEmpty()) {
-            List<AccessibilityNodeInfo> found = root.findAccessibilityNodeInfosByText(text);
-            if (found != null) candidates.addAll(found);
+            queryType = "text";
+            query = text;
         } else if (!id.isEmpty()) {
-            List<AccessibilityNodeInfo> found = root.findAccessibilityNodeInfosByViewId(id);
-            if (found != null) candidates.addAll(found);
+            queryType = "id";
+            query = id;
         } else {
-            // desc search: manual traversal (no built-in API for content description)
-            collectByDesc(root, desc, candidates);
+            queryType = "desc";
+            query = desc;
         }
 
-        // Apply clickable filter
-        if (onlyClickable) {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) {
+            return buildFindFailure(
+                    queryType, query, fuzzy, onlyClickable, index,
+                    FIND_REASON_NO_ACTIVE_WINDOW, new JSONArray(),
+                    0, 0, false
+            );
+        }
+
+        try {
+            List<AccessibilityNodeInfo> exactCandidates = new ArrayList<>();
+            if ("text".equals(queryType)) {
+                List<AccessibilityNodeInfo> found = root.findAccessibilityNodeInfosByText(query);
+                if (found != null) exactCandidates.addAll(found);
+            } else if ("id".equals(queryType)) {
+                List<AccessibilityNodeInfo> found = root.findAccessibilityNodeInfosByViewId(query);
+                if (found != null) exactCandidates.addAll(found);
+            } else {
+                collectByDesc(root, query, exactCandidates, false);
+            }
+
+            int exactVisibleCount = 0;
+            for (AccessibilityNodeInfo n : exactCandidates) {
+                if (n != null && n.isVisibleToUser()) exactVisibleCount++;
+            }
+
             List<AccessibilityNodeInfo> filtered = new ArrayList<>();
-            for (AccessibilityNodeInfo n : candidates) {
-                if (n.isClickable()) {
-                    filtered.add(n);
-                } else {
-                    AccessibilityNodeInfo parent = findClickableParent(n);
-                    if (parent != null) filtered.add(parent);
+            if (onlyClickable) {
+                Set<String> seen = new HashSet<>();
+                for (AccessibilityNodeInfo n : exactCandidates) {
+                    if (n == null) continue;
+                    AccessibilityNodeInfo picked = null;
+                    if (n.isClickable()) {
+                        picked = n;
+                    } else {
+                        AccessibilityNodeInfo parent = findClickableParent(n);
+                        if (parent != null) picked = parent;
+                    }
+                    if (picked == null) continue;
+                    String key = buildFindNodeKey(picked);
+                    if (seen.add(key)) filtered.add(picked);
+                }
+            } else {
+                filtered.addAll(exactCandidates);
+            }
+
+            if (!filtered.isEmpty()) {
+                if (index >= filtered.size()) {
+                    ArrayList<ScreenSummaryNode> inspectNodes = new ArrayList<>();
+                    collectFindDiagnosticNodes(root, inspectNodes);
+                    JSONArray hints = buildFindCandidates(inspectNodes, queryType, query, candidateLimit);
+                    return buildFindFailure(
+                            queryType, query, fuzzy, onlyClickable, index,
+                            FIND_REASON_INDEX_OUT_OF_RANGE, hints,
+                            filtered.size(), exactVisibleCount, hasScrollableNode(inspectNodes)
+                    );
+                }
+
+                AccessibilityNodeInfo target = filtered.get(index);
+                Rect bounds = new Rect();
+                target.getBoundsInScreen(bounds);
+
+                JSONObject result = new JSONObject();
+                result.put("ok", true);
+                result.put("found", true);
+                result.put("reason", "exact_match");
+                result.put("score", 1.0);
+                result.put("text", target.getText() != null ? target.getText().toString() : "");
+                result.put("desc", target.getContentDescription() != null ? target.getContentDescription().toString() : "");
+                result.put("id", target.getViewIdResourceName() != null ? target.getViewIdResourceName() : "");
+                result.put("bounds", bounds.flattenToString());
+                result.put("boundsArray", rectToArray(bounds));
+                result.put("centerX", bounds.centerX());
+                result.put("centerY", bounds.centerY());
+                result.put("clickable", target.isClickable());
+                result.put("editable", target.isEditable());
+                result.put("scrollable", target.isScrollable());
+                result.put("matchCount", filtered.size());
+                result.put("index", index);
+                return result.toString();
+            }
+
+            ArrayList<ScreenSummaryNode> inspectNodes = new ArrayList<>();
+            collectFindDiagnosticNodes(root, inspectNodes);
+            boolean hasScrollable = hasScrollableNode(inspectNodes);
+
+            ArrayList<FindRankedNode> ranked = rankFindNodes(inspectNodes, queryType, query);
+
+            if (fuzzy) {
+                ArrayList<FindRankedNode> fuzzyMatches = pickFuzzyMatches(ranked, onlyClickable);
+                if (!fuzzyMatches.isEmpty()) {
+                    if (index >= fuzzyMatches.size()) {
+                        JSONArray hints = buildFindCandidates(inspectNodes, queryType, query, candidateLimit);
+                        return buildFindFailure(
+                                queryType, query, true, onlyClickable, index,
+                                FIND_REASON_INDEX_OUT_OF_RANGE, hints,
+                                fuzzyMatches.size(), exactVisibleCount, hasScrollable
+                        );
+                    }
+                    FindRankedNode picked = fuzzyMatches.get(index);
+                    ScreenSummaryNode target = picked.node;
+                    JSONObject result = new JSONObject();
+                    result.put("ok", true);
+                    result.put("found", true);
+                    result.put("reason", "fuzzy_match");
+                    result.put("score", roundFindScore(picked.score));
+                    result.put("text", target.text != null ? target.text : "");
+                    result.put("desc", target.desc != null ? target.desc : "");
+                    result.put("id", target.id != null ? target.id : "");
+                    result.put("bounds", target.bounds.flattenToString());
+                    result.put("boundsArray", rectToArray(target.bounds));
+                    result.put("centerX", target.bounds.centerX());
+                    result.put("centerY", target.bounds.centerY());
+                    result.put("clickable", target.clickable || target.longClickable);
+                    result.put("editable", target.editable);
+                    result.put("scrollable", target.scrollable);
+                    result.put("matchCount", fuzzyMatches.size());
+                    result.put("index", index);
+                    return result.toString();
                 }
             }
-            candidates = filtered;
-        }
 
-        if (candidates.isEmpty()) {
+            JSONArray hints = buildFindCandidates(inspectNodes, queryType, query, candidateLimit);
+            String reason = resolveFindFailureReason(
+                    queryType,
+                    query,
+                    exactCandidates.size(),
+                    exactVisibleCount,
+                    onlyClickable,
+                    ranked,
+                    hasScrollable,
+                    root
+            );
+            return buildFindFailure(
+                    queryType, query, fuzzy, onlyClickable, index,
+                    reason, hints,
+                    0, exactVisibleCount, hasScrollable
+            );
+        } finally {
             root.recycle();
-            return errorJson("No matching element found", "NOT_FOUND");
         }
+    }
 
-        if (index >= candidates.size()) {
-            root.recycle();
-            return errorJson("Index " + index + " out of range (found " + candidates.size() + ")", "NOT_FOUND");
+    private static class FindRankedNode {
+        final ScreenSummaryNode node;
+        final double score;
+
+        FindRankedNode(ScreenSummaryNode node, double score) {
+            this.node = node;
+            this.score = score;
         }
+    }
 
-        AccessibilityNodeInfo target = candidates.get(index);
-        Rect bounds = new Rect();
-        target.getBoundsInScreen(bounds);
-
+    private String buildFindFailure(
+            String queryType,
+            String query,
+            boolean fuzzy,
+            boolean clickableOnly,
+            int index,
+            String reason,
+            JSONArray candidates,
+            int matchCount,
+            int visibleExactCount,
+            boolean hasScrollable
+    ) throws Exception {
         JSONObject result = new JSONObject();
-        result.put("ok", true);
-        result.put("text", target.getText() != null ? target.getText().toString() : "");
-        result.put("desc", target.getContentDescription() != null ? target.getContentDescription().toString() : "");
-        result.put("id", target.getViewIdResourceName() != null ? target.getViewIdResourceName() : "");
-        result.put("bounds", bounds.flattenToString());
-        result.put("centerX", bounds.centerX());
-        result.put("centerY", bounds.centerY());
-        result.put("clickable", target.isClickable());
-        result.put("editable", target.isEditable());
-        result.put("scrollable", target.isScrollable());
-        result.put("matchCount", candidates.size());
+        result.put("ok", false);
+        result.put("found", false);
+        result.put("reason", reason);
+        result.put("queryType", queryType);
+        result.put("query", query);
+        result.put("fuzzy", fuzzy);
+        result.put("clickableOnly", clickableOnly);
         result.put("index", index);
-
-        root.recycle();
+        result.put("matchCount", matchCount);
+        result.put("visibleExactMatchCount", visibleExactCount);
+        result.put("hasScrollable", hasScrollable);
+        result.put("candidates", candidates);
+        result.put("candidateCount", candidates != null ? candidates.length() : 0);
+        result.put("error", "No matching element found (" + reason + ")");
+        result.put("code", "NOT_FOUND");
         return result.toString();
     }
 
-    private void collectByDesc(AccessibilityNodeInfo node, String descQuery, List<AccessibilityNodeInfo> out) {
+    private String resolveFindFailureReason(
+            String queryType,
+            String query,
+            int exactMatchCount,
+            int exactVisibleCount,
+            boolean clickableOnly,
+            List<FindRankedNode> ranked,
+            boolean hasScrollable,
+            AccessibilityNodeInfo activeRoot
+    ) {
+        boolean hasStrongCandidate = false;
+        boolean hasStrongClickableCandidate = false;
+        boolean hasStrongVisibleCandidate = false;
+        boolean hasStrongInScrollableCandidate = false;
+        boolean hasAnyInScrollableCandidate = false;
+        for (FindRankedNode item : ranked) {
+            if (item == null || item.node == null) continue;
+            if (item.score >= 0.35d && (item.node.insideScrollable || item.node.scrollable)) {
+                hasAnyInScrollableCandidate = true;
+            }
+            if (item.score < 0.62d) continue;
+            hasStrongCandidate = true;
+            if (item.node.visible) hasStrongVisibleCandidate = true;
+            if (item.node.insideScrollable || item.node.scrollable) hasStrongInScrollableCandidate = true;
+            if (item.node.clickable || item.node.longClickable) {
+                hasStrongClickableCandidate = true;
+            }
+        }
+        if (clickableOnly && (exactMatchCount > 0 || hasStrongCandidate) && !hasStrongClickableCandidate) {
+            return FIND_REASON_NOT_CLICKABLE;
+        }
+        if (exactMatchCount > 0 && exactVisibleCount == 0) {
+            if (hasScrollable || hasStrongInScrollableCandidate) return FIND_REASON_NEED_SCROLL;
+            return FIND_REASON_OFF_SCREEN;
+        }
+        if (query != null && !query.isEmpty() && hasQueryInOtherWindows(queryType, query, activeRoot)) {
+            return FIND_REASON_ANOTHER_WINDOW;
+        }
+        if (hasStrongInScrollableCandidate || (hasScrollable && hasAnyInScrollableCandidate)) {
+            return FIND_REASON_NEED_SCROLL;
+        }
+        if (hasStrongCandidate && !hasStrongVisibleCandidate) {
+            return FIND_REASON_OFF_SCREEN;
+        }
+        return mismatchReasonForQueryType(queryType);
+    }
+
+    private String mismatchReasonForQueryType(String queryType) {
+        if ("id".equals(queryType)) return FIND_REASON_ID_MISMATCH;
+        if ("desc".equals(queryType)) return FIND_REASON_DESC_MISMATCH;
+        return FIND_REASON_TEXT_MISMATCH;
+    }
+
+    private boolean hasQueryInOtherWindows(String queryType, String query, AccessibilityNodeInfo activeRoot) {
+        List<AccessibilityWindowInfo> windows = getWindows();
+        if (windows == null || windows.isEmpty()) return false;
+
+        int checked = 0;
+        for (AccessibilityWindowInfo window : windows) {
+            if (window == null) continue;
+            if (window.isActive()) continue;
+            if (checked >= 6) break;
+
+            AccessibilityNodeInfo root = null;
+            try {
+                root = window.getRoot();
+                if (root == null) continue;
+                if (activeRoot != null && System.identityHashCode(root) == System.identityHashCode(activeRoot)) {
+                    continue;
+                }
+                checked++;
+                if (hasQueryMatchInRoot(root, queryType, query)) {
+                    return true;
+                }
+            } catch (Exception ignored) {
+                // Ignore broken window roots and continue scanning.
+            } finally {
+                if (root != null) {
+                    try {
+                        root.recycle();
+                    } catch (Exception ignored) {
+                        // ignore recycle failures
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean hasQueryMatchInRoot(AccessibilityNodeInfo root, String queryType, String query) {
+        if (root == null || query == null || query.isEmpty()) return false;
+        if ("text".equals(queryType)) {
+            List<AccessibilityNodeInfo> found = root.findAccessibilityNodeInfosByText(query);
+            return found != null && !found.isEmpty();
+        }
+        if ("id".equals(queryType)) {
+            try {
+                List<AccessibilityNodeInfo> found = root.findAccessibilityNodeInfosByViewId(query);
+                return found != null && !found.isEmpty();
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+        List<AccessibilityNodeInfo> byDesc = new ArrayList<>();
+        collectByDesc(root, query, byDesc, false);
+        return !byDesc.isEmpty();
+    }
+
+    private boolean hasScrollableNode(List<ScreenSummaryNode> nodes) {
+        if (nodes == null) return false;
+        for (ScreenSummaryNode node : nodes) {
+            if (node != null && (node.scrollable || node.insideScrollable)) return true;
+        }
+        return false;
+    }
+
+    private void collectFindDiagnosticNodes(AccessibilityNodeInfo root, List<ScreenSummaryNode> out) {
+        if (root == null || out == null) return;
+        long deadlineMs = System.currentTimeMillis() + FIND_MAX_DIAGNOSTIC_MS;
+        collectFindDiagnosticNodesRecursive(root, out, false, 0, deadlineMs);
+    }
+
+    private void collectFindDiagnosticNodesRecursive(
+            AccessibilityNodeInfo node,
+            List<ScreenSummaryNode> out,
+            boolean insideScrollable,
+            int depth,
+            long deadlineMs
+    ) {
+        if (node == null || out == null) return;
+        if (out.size() >= FIND_MAX_DIAGNOSTIC_NODES) return;
+        if (depth > FIND_MAX_DIAGNOSTIC_DEPTH) return;
+        if (System.currentTimeMillis() > deadlineMs) return;
+
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        String className = node.getClassName() != null ? node.getClassName().toString() : "";
+        String id = node.getViewIdResourceName() != null ? node.getViewIdResourceName() : "";
+        String text = node.getText() != null ? node.getText().toString() : "";
+        String desc = node.getContentDescription() != null ? node.getContentDescription().toString() : "";
+        CharSequence hintCs = null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            hintCs = node.getHintText();
+        }
+        String hint = hintCs != null ? hintCs.toString() : "";
+        boolean clickable = node.isClickable();
+        boolean longClickable = node.isLongClickable();
+        boolean editable = node.isEditable();
+        boolean scrollable = node.isScrollable();
+        boolean visible = node.isVisibleToUser();
+        boolean enabled = node.isEnabled();
+        boolean nowInsideScrollable = insideScrollable || scrollable;
+
+        boolean shouldRecord = clickable
+                || longClickable
+                || editable
+                || scrollable
+                || (!text.isEmpty())
+                || (!desc.isEmpty())
+                || (!id.isEmpty())
+                || (!hint.isEmpty());
+
+        if (shouldRecord) {
+            out.add(new ScreenSummaryNode(
+                    node.getPackageName() != null ? node.getPackageName().toString() : "",
+                    className,
+                    id,
+                    text,
+                    desc,
+                    hint,
+                    clickable,
+                    longClickable,
+                    editable,
+                    scrollable,
+                    enabled,
+                    visible,
+                    nowInsideScrollable,
+                    node.getChildCount(),
+                    depth,
+                    bounds
+            ));
+        }
+
+        if (depth >= FIND_MAX_DIAGNOSTIC_DEPTH || out.size() >= FIND_MAX_DIAGNOSTIC_NODES) return;
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (out.size() >= FIND_MAX_DIAGNOSTIC_NODES) return;
+            if (System.currentTimeMillis() > deadlineMs) return;
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child == null) continue;
+            try {
+                collectFindDiagnosticNodesRecursive(child, out, nowInsideScrollable, depth + 1, deadlineMs);
+            } finally {
+                child.recycle();
+            }
+        }
+    }
+
+    private String buildFindNodeKey(AccessibilityNodeInfo node) {
+        if (node == null) return "";
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        return (node.getViewIdResourceName() != null ? node.getViewIdResourceName() : "")
+                + "|"
+                + bounds.flattenToString()
+                + "|"
+                + (node.getClassName() != null ? node.getClassName().toString() : "");
+    }
+
+    private JSONArray buildFindCandidates(List<ScreenSummaryNode> nodes, String queryType, String query, int limit) throws Exception {
+        JSONArray out = new JSONArray();
+        if (limit <= 0 || nodes == null || nodes.isEmpty()) return out;
+
+        ArrayList<FindRankedNode> ranked = rankFindNodes(nodes, queryType, query);
+        Set<String> seen = new HashSet<>();
+        for (FindRankedNode item : ranked) {
+            if (out.length() >= limit) break;
+            if (item == null || item.node == null) continue;
+            if (item.score <= 0.20d) continue;
+            String key = buildSummaryDedupeKey(item.node);
+            if (!seen.add(key)) continue;
+
+            ScreenSummaryNode node = item.node;
+            JSONObject c = new JSONObject();
+            c.put("text", getSummaryNodeLabel(node));
+            c.put("desc", node.desc != null ? shortenInspectorText(node.desc, 40) : "");
+            c.put("id", node.id != null ? node.id : "");
+            c.put("class", node.className != null ? node.className : "");
+            c.put("score", roundFindScore(item.score));
+            c.put("bounds", rectToArray(node.bounds));
+            c.put("centerX", node.bounds.centerX());
+            c.put("centerY", node.bounds.centerY());
+            c.put("clickable", node.clickable || node.longClickable);
+            c.put("editable", node.editable);
+            c.put("visible", node.visible);
+            c.put("insideScrollable", node.insideScrollable);
+            out.put(c);
+        }
+        return out;
+    }
+
+    private ArrayList<FindRankedNode> pickFuzzyMatches(List<FindRankedNode> ranked, boolean clickableOnly) {
+        ArrayList<FindRankedNode> out = new ArrayList<>();
+        if (ranked == null || ranked.isEmpty()) return out;
+        Set<String> seen = new HashSet<>();
+        for (FindRankedNode item : ranked) {
+            if (item == null || item.node == null) continue;
+            if (item.score < 0.62d) continue;
+            if (!item.node.visible || !item.node.enabled) continue;
+            if (clickableOnly && !(item.node.clickable || item.node.longClickable)) continue;
+            String key = buildSummaryDedupeKey(item.node);
+            if (!seen.add(key)) continue;
+            out.add(item);
+        }
+        return out;
+    }
+
+    private ArrayList<FindRankedNode> rankFindNodes(List<ScreenSummaryNode> nodes, String queryType, String query) {
+        ArrayList<FindRankedNode> out = new ArrayList<>();
+        if (nodes == null || query == null || query.isEmpty()) return out;
+        for (ScreenSummaryNode node : nodes) {
+            double score = scoreFindNode(node, queryType, query);
+            if (score > 0.01d) {
+                out.add(new FindRankedNode(node, score));
+            }
+        }
+        Collections.sort(out, (a, b) -> {
+            int scoreCmp = Double.compare(b.score, a.score);
+            if (scoreCmp != 0) return scoreCmp;
+            int visibleCmp = Boolean.compare(b.node.visible, a.node.visible);
+            if (visibleCmp != 0) return visibleCmp;
+            int clickCmp = Boolean.compare((b.node.clickable || b.node.longClickable), (a.node.clickable || a.node.longClickable));
+            if (clickCmp != 0) return clickCmp;
+            return Integer.compare(a.node.depth, b.node.depth);
+        });
+        return out;
+    }
+
+    private double scoreFindNode(ScreenSummaryNode node, String queryType, String query) {
+        if (node == null || query == null || query.isEmpty()) return 0d;
+        String text = node.text != null ? node.text : "";
+        String desc = node.desc != null ? node.desc : "";
+        String id = node.id != null ? node.id : "";
+        String shortId = getSummaryShortId(id);
+        String className = node.className != null ? node.className : "";
+
+        double textScore = scoreFindField(query, text);
+        double descScore = scoreFindField(query, desc);
+        double idScore = scoreFindField(query, id);
+        double shortIdScore = scoreFindField(query, shortId);
+        double classScore = scoreFindField(query, className);
+
+        double lexicalScore;
+        if ("id".equals(queryType)) {
+            lexicalScore = Math.max(idScore, Math.max(shortIdScore * 0.96d, Math.max(textScore * 0.72d, descScore * 0.60d)));
+        } else if ("desc".equals(queryType)) {
+            lexicalScore = Math.max(descScore, Math.max(textScore * 0.88d, Math.max(shortIdScore * 0.72d, classScore * 0.56d)));
+        } else {
+            lexicalScore = Math.max(textScore, Math.max(descScore * 0.86d, Math.max(shortIdScore * 0.74d, classScore * 0.54d)));
+        }
+        if (lexicalScore <= 0d) return 0d;
+
+        double score = lexicalScore;
+        if (node.visible) score += 0.04d;
+        else score -= 0.08d;
+        if (node.enabled) score += 0.02d;
+        if (node.clickable || node.longClickable) score += 0.02d;
+        if (node.bounds.width() <= 0 || node.bounds.height() <= 0) score -= 0.20d;
+        if (node.insideScrollable) score += 0.01d;
+        return clampDouble(score, 0d, 1d);
+    }
+
+    private double scoreFindField(String query, String fieldValue) {
+        if (query == null || query.isEmpty() || fieldValue == null || fieldValue.isEmpty()) return 0d;
+        if (fieldValue.equals(query)) return 1d;
+        if (fieldValue.equalsIgnoreCase(query)) return 0.99d;
+
+        String qNorm = normalizeFindToken(query);
+        String fNorm = normalizeFindToken(fieldValue);
+        if (qNorm.isEmpty() || fNorm.isEmpty()) return 0d;
+        if (qNorm.equals(fNorm)) return 1d;
+        if (fNorm.contains(qNorm) || qNorm.contains(fNorm)) {
+            double ratio = (double) Math.min(qNorm.length(), fNorm.length()) / (double) Math.max(qNorm.length(), fNorm.length());
+            return clampDouble(0.72d + 0.25d * ratio, 0d, 0.97d);
+        }
+        if (!shareFindChar(qNorm, fNorm)) return 0d;
+        return normalizedSimilarityTokens(qNorm, fNorm);
+    }
+
+    private String normalizeFindToken(String raw) {
+        if (raw == null || raw.isEmpty()) return "";
+        String s = raw.toLowerCase(Locale.ROOT).trim();
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if (Character.isLetterOrDigit(ch)) {
+                sb.append(ch);
+            }
+        }
+        return sb.toString();
+    }
+
+    private double normalizedSimilarity(String left, String right) {
+        String a = normalizeFindToken(left);
+        String b = normalizeFindToken(right);
+        return normalizedSimilarityTokens(a, b);
+    }
+
+    private double normalizedSimilarityTokens(String a, String b) {
+        if (a.isEmpty() || b.isEmpty()) return 0d;
+        if (a.equals(b)) return 1d;
+        if (a.contains(b) || b.contains(a)) {
+            double ratio = (double) Math.min(a.length(), b.length()) / (double) Math.max(a.length(), b.length());
+            return clampDouble(0.68d + ratio * 0.28d, 0d, 0.96d);
+        }
+        if (!shareFindChar(a, b)) return 0d;
+
+        // Bound edit-distance cost on pathological long labels.
+        if (a.length() > 40) a = a.substring(0, 40);
+        if (b.length() > 40) b = b.substring(0, 40);
+
+        int dist = levenshteinDistance(a, b);
+        int maxLen = Math.max(a.length(), b.length());
+        if (maxLen == 0) return 0d;
+        return clampDouble(1d - ((double) dist / (double) maxLen), 0d, 1d);
+    }
+
+    private boolean shareFindChar(String a, String b) {
+        if (a == null || b == null || a.isEmpty() || b.isEmpty()) return false;
+        String shortS = a.length() <= b.length() ? a : b;
+        String longS = a.length() <= b.length() ? b : a;
+        for (int i = 0; i < shortS.length(); i++) {
+            if (longS.indexOf(shortS.charAt(i)) >= 0) return true;
+        }
+        return false;
+    }
+
+    private int levenshteinDistance(String a, String b) {
+        int n = a.length();
+        int m = b.length();
+        if (n == 0) return m;
+        if (m == 0) return n;
+
+        int[] prev = new int[m + 1];
+        int[] curr = new int[m + 1];
+        for (int j = 0; j <= m; j++) prev[j] = j;
+
+        for (int i = 1; i <= n; i++) {
+            curr[0] = i;
+            char ca = a.charAt(i - 1);
+            for (int j = 1; j <= m; j++) {
+                int cost = ca == b.charAt(j - 1) ? 0 : 1;
+                curr[j] = Math.min(
+                        Math.min(curr[j - 1] + 1, prev[j] + 1),
+                        prev[j - 1] + cost
+                );
+            }
+            int[] tmp = prev;
+            prev = curr;
+            curr = tmp;
+        }
+        return prev[m];
+    }
+
+    private double clampDouble(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private double roundFindScore(double score) {
+        return Math.round(clampDouble(score, 0d, 1d) * 100.0d) / 100.0d;
+    }
+
+    private void collectByDesc(AccessibilityNodeInfo node, String descQuery, List<AccessibilityNodeInfo> out, boolean ignoreCase) {
         if (node == null) return;
         CharSequence cd = node.getContentDescription();
-        if (cd != null && cd.toString().contains(descQuery)) {
-            out.add(node);
+        if (cd != null) {
+            String current = cd.toString();
+            boolean matched = ignoreCase ? containsIgnoreCase(current, descQuery) : current.contains(descQuery);
+            if (matched) out.add(node);
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
-            if (child != null) collectByDesc(child, descQuery, out);
+            if (child != null) collectByDesc(child, descQuery, out, ignoreCase);
         }
     }
 
