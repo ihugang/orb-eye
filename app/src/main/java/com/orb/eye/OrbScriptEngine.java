@@ -33,6 +33,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -53,6 +54,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * // Interaction
  * tap(x, y)             → boolean
+ * shellTap(x, y)        → boolean
  * click(text)           → boolean
  * clickDesc(desc)       → boolean
  * clickId(id)           → boolean
@@ -88,9 +90,11 @@ public class OrbScriptEngine {
     private final OrbAccessibilityService svc;
     // Track active script threads by execution id so /stopjs can target one script.
     private final ConcurrentHashMap<Long, Thread> workersByExecutionId = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, AtomicBoolean> cancelFlagsByExecutionId = new ConcurrentHashMap<>();
     // Each worker keeps its own log buffer / stream sink to avoid cross-script leakage.
     private final ThreadLocal<List<String>> threadLogBuffer = new ThreadLocal<>();
     private final ThreadLocal<OutputStream> threadStreamSink = new ThreadLocal<>();
+    private final ThreadLocal<Long> currentExecutionId = new ThreadLocal<>();
     private final AtomicLong nextExecutionId = new AtomicLong(1L);
 
     private static final InterruptibleContextFactory CONTEXT_FACTORY = new InterruptibleContextFactory();
@@ -135,7 +139,15 @@ public class OrbScriptEngine {
 
     public int stopAllRunningScripts() {
         int stopped = 0;
-        for (Thread worker : workersByExecutionId.values()) {
+        for (Long executionId : workersByExecutionId.keySet()) {
+            AtomicBoolean cancelFlag = cancelFlagsByExecutionId.get(executionId);
+            if (cancelFlag != null) {
+                cancelFlag.set(true);
+            }
+            Thread worker = workersByExecutionId.get(executionId);
+            if (worker == null) {
+                continue;
+            }
             if (worker.isAlive()) {
                 worker.interrupt();
                 stopped++;
@@ -146,6 +158,10 @@ public class OrbScriptEngine {
 
     public boolean stopExecution(long executionId) {
         Thread worker = workersByExecutionId.get(executionId);
+        AtomicBoolean cancelFlag = cancelFlagsByExecutionId.get(executionId);
+        if (cancelFlag != null) {
+            cancelFlag.set(true);
+        }
         if (worker == null) {
             return false;
         }
@@ -167,6 +183,7 @@ public class OrbScriptEngine {
             if (prev != null) {
                 throw new IllegalStateException("executionId already running: " + executionId);
             }
+            cancelFlagsByExecutionId.put(executionId, new AtomicBoolean(false));
             return executionId;
         }
 
@@ -177,6 +194,7 @@ public class OrbScriptEngine {
                 continue;
             }
             if (workersByExecutionId.putIfAbsent(executionId, worker) == null) {
+                cancelFlagsByExecutionId.put(executionId, new AtomicBoolean(false));
                 return executionId;
             }
         }
@@ -200,6 +218,7 @@ public class OrbScriptEngine {
         Thread worker = new Thread(() -> {
             threadLogBuffer.set(logs);
             try {
+                currentExecutionId.set(executionIdHolder[0]);
                 resultHolder[0] = CONTEXT_FACTORY.call(cx -> {
                     Scriptable scope = cx.initStandardObjects();
                     injectAPI(cx, scope);
@@ -214,8 +233,10 @@ public class OrbScriptEngine {
                     errorHolder[0] = t;
                 }
             } finally {
+                currentExecutionId.remove();
                 threadLogBuffer.remove();
                 workersByExecutionId.remove(executionIdHolder[0], Thread.currentThread());
+                cancelFlagsByExecutionId.remove(executionIdHolder[0]);
             }
         });
         try {
@@ -282,6 +303,7 @@ public class OrbScriptEngine {
             threadLogBuffer.set(logs);
             threadStreamSink.set(out);
             try {
+                currentExecutionId.set(executionIdHolder[0]);
                 resultHolder[0] = CONTEXT_FACTORY.call(cx -> {
                     Scriptable scope = cx.initStandardObjects();
                     injectAPI(cx, scope);
@@ -296,9 +318,11 @@ public class OrbScriptEngine {
                     errorHolder[0] = t;
                 }
             } finally {
+                currentExecutionId.remove();
                 threadStreamSink.remove();
                 threadLogBuffer.remove();
                 workersByExecutionId.remove(executionIdHolder[0], Thread.currentThread());
+                cancelFlagsByExecutionId.remove(executionIdHolder[0]);
             }
         });
         try {
@@ -431,6 +455,48 @@ public class OrbScriptEngine {
         return null;
     }
 
+    private void throwIfStopRequested() {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new ScriptInterruptedException("script execution interrupted");
+        }
+        Long executionId = currentExecutionId.get();
+        if (executionId == null) {
+            return;
+        }
+        AtomicBoolean cancelFlag = cancelFlagsByExecutionId.get(executionId);
+        if (cancelFlag != null && cancelFlag.get()) {
+            throw new ScriptInterruptedException("script execution interrupted");
+        }
+    }
+
+    private void throwIfInterrupted(Exception e) {
+        if (e instanceof InterruptedException || Thread.currentThread().isInterrupted()) {
+            Thread.currentThread().interrupt();
+            throw new ScriptInterruptedException("script execution interrupted");
+        }
+    }
+
+    private String sanitizeUiText(CharSequence value) {
+        if (value == null) {
+            return "";
+        }
+        String text = value.toString();
+        if (text.isEmpty()) {
+            return "";
+        }
+        String compact = text.trim();
+        if (compact.startsWith("data:image/")) {
+            return "[embedded-image-data]";
+        }
+        if (compact.contains("base64,") && compact.length() > 120) {
+            return "[embedded-binary-text]";
+        }
+        if ((compact.startsWith("PHN2Zy") || compact.startsWith("iVBOR")) && compact.length() > 120) {
+            return "[embedded-image-data]";
+        }
+        return text;
+    }
+
     // ─── API Injection ──────────────────────────────────────────────────────
 
     private void injectAPI(Context cx, Scriptable scope) {
@@ -467,6 +533,7 @@ public class OrbScriptEngine {
         "function getText() { return _orb.getText(); }\n" +
         // Interaction
         "function tap(x, y) { return _orb.tap(x, y); }\n" +
+        "function shellTap(x, y) { return _orb.shellTap(x, y); }\n" +
         "function click(t) { return _orb.click(t); }\n" +
         "function clickDesc(d) { return _orb.clickDesc(d); }\n" +
         "function clickId(id) { return _orb.clickId(id); }\n" +
@@ -525,34 +592,7 @@ public class OrbScriptEngine {
 
         public String getScreen() {
             try {
-                AccessibilityNodeInfo root = svc.getRootInActiveWindow();
-                if (root == null) return "[]";
-                JSONArray arr = new JSONArray();
-                Queue<AccessibilityNodeInfo> queue = new ArrayDeque<>();
-                queue.add(root);
-                while (!queue.isEmpty()) {
-                    AccessibilityNodeInfo node = queue.poll();
-                    String text = node.getText() != null ? node.getText().toString() : "";
-                    String desc = node.getContentDescription() != null ? node.getContentDescription().toString() : "";
-                    if (!text.isEmpty() || !desc.isEmpty() || node.isClickable()) {
-                        Rect bounds = new Rect();
-                        node.getBoundsInScreen(bounds);
-                        JSONObject obj = new JSONObject();
-                        obj.put("text", text);
-                        obj.put("desc", desc);
-                        obj.put("centerX", bounds.centerX());
-                        obj.put("centerY", bounds.centerY());
-                        obj.put("clickable", node.isClickable());
-                        obj.put("className", node.getClassName() != null ? node.getClassName().toString() : "");
-                        arr.put(obj);
-                    }
-                    for (int i = 0; i < node.getChildCount(); i++) {
-                        AccessibilityNodeInfo child = node.getChild(i);
-                        if (child != null) queue.add(child);
-                    }
-                }
-                root.recycle();
-                return arr.toString();
+                return svc.getScreenElementsForScript();
             } catch (Exception e) {
                 Log.e(TAG, "getScreen error: " + e.getMessage());
                 return "[]";
@@ -596,24 +636,7 @@ public class OrbScriptEngine {
 
         public String findText(String text) {
             try {
-                AccessibilityNodeInfo root = svc.getRootInActiveWindow();
-                if (root == null) return null;
-                List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(text);
-                if (nodes == null || nodes.isEmpty()) {
-                    root.recycle();
-                    return null;
-                }
-                AccessibilityNodeInfo node = nodes.get(0);
-                Rect bounds = new Rect();
-                node.getBoundsInScreen(bounds);
-                JSONObject obj = new JSONObject();
-                obj.put("text", node.getText() != null ? node.getText().toString() : "");
-                obj.put("desc", node.getContentDescription() != null ? node.getContentDescription().toString() : "");
-                obj.put("centerX", bounds.centerX());
-                obj.put("centerY", bounds.centerY());
-                obj.put("clickable", node.isClickable());
-                root.recycle();
-                return obj.toString();
+                return svc.findTextForScript(text);
             } catch (Exception e) {
                 return null;
             }
@@ -621,12 +644,7 @@ public class OrbScriptEngine {
 
         public boolean hasText(String text) {
             try {
-                AccessibilityNodeInfo root = svc.getRootInActiveWindow();
-                if (root == null) return false;
-                List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(text);
-                boolean found = nodes != null && !nodes.isEmpty();
-                root.recycle();
-                return found;
+                return svc.hasTextForScript(text);
             } catch (Exception e) {
                 return false;
             }
@@ -634,26 +652,7 @@ public class OrbScriptEngine {
 
         public String getText() {
             try {
-                AccessibilityNodeInfo root = svc.getRootInActiveWindow();
-                if (root == null) return "";
-                StringBuilder sb = new StringBuilder();
-                Queue<AccessibilityNodeInfo> queue = new ArrayDeque<>();
-                queue.add(root);
-                while (!queue.isEmpty()) {
-                    AccessibilityNodeInfo node = queue.poll();
-                    if (node.getText() != null) {
-                        sb.append(node.getText().toString()).append(' ');
-                    }
-                    if (node.getContentDescription() != null) {
-                        sb.append(node.getContentDescription().toString()).append(' ');
-                    }
-                    for (int i = 0; i < node.getChildCount(); i++) {
-                        AccessibilityNodeInfo child = node.getChild(i);
-                        if (child != null) queue.add(child);
-                    }
-                }
-                root.recycle();
-                return sb.toString();
+                return svc.getVisibleTextForScript();
             } catch (Exception e) {
                 return "";
             }
@@ -729,25 +728,40 @@ public class OrbScriptEngine {
          * Returns the command's stdout, or empty string on error.
          */
         public String shell(String cmd) {
+            Process proc = null;
             try {
+                throwIfStopRequested();
                 String c = cmd != null ? cmd.trim() : "";
                 if (c.isEmpty()) return "";
-                Process proc = Runtime.getRuntime().exec(new String[]{"sh", "-c", c});
+                proc = Runtime.getRuntime().exec(new String[]{"sh", "-c", c});
                 java.io.InputStream is = proc.getInputStream();
                 java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
                 byte[] tmp = new byte[1024];
                 int n;
-                while ((n = is.read(tmp)) != -1) buf.write(tmp, 0, n);
+                while ((n = is.read(tmp)) != -1) {
+                    throwIfStopRequested();
+                    buf.write(tmp, 0, n);
+                }
                 proc.waitFor();
+                throwIfStopRequested();
                 return buf.toString("UTF-8").trim();
             } catch (Exception e) {
+                throwIfInterrupted(e);
                 Log.e(TAG, "shell error: " + e.getMessage());
                 return "";
+            } finally {
+                if (Thread.currentThread().isInterrupted() && proc != null) {
+                    try {
+                        proc.destroyForcibly();
+                    } catch (Exception ignored) {
+                    }
+                }
             }
         }
 
         public boolean tap(int x, int y) {
             try {
+                throwIfStopRequested();
                 Path path = new Path();
                 path.moveTo(x, y);
                 GestureDescription.Builder builder = new GestureDescription.Builder();
@@ -764,10 +778,48 @@ public class OrbScriptEngine {
                     if (!result[0]) latch.countDown();
                 });
                 latch.await(3, TimeUnit.SECONDS);
+                throwIfStopRequested();
                 return result[0];
             } catch (Exception e) {
+                throwIfInterrupted(e);
                 Log.e(TAG, "tap error: " + e.getMessage());
                 return false;
+            }
+        }
+
+        /**
+         * Execute "input tap x y" through the device shell.
+         * This matches the explicit shell-tap route used by some automation tools.
+         */
+        public boolean shellTap(int x, int y) {
+            Process proc = null;
+            try {
+                throwIfStopRequested();
+                String cmd = "input tap " + x + " " + y;
+                proc = Runtime.getRuntime().exec(new String[]{"sh", "-c", cmd});
+                int exitCode = proc.waitFor();
+                throwIfStopRequested();
+                if (exitCode != 0) {
+                    java.io.InputStream es = proc.getErrorStream();
+                    java.io.ByteArrayOutputStream err = new java.io.ByteArrayOutputStream();
+                    byte[] tmp = new byte[1024];
+                    int n;
+                    while ((n = es.read(tmp)) != -1) err.write(tmp, 0, n);
+                    Log.e(TAG, "shellTap failed: exit=" + exitCode + " err=" + err.toString("UTF-8").trim());
+                    return false;
+                }
+                return true;
+            } catch (Exception e) {
+                throwIfInterrupted(e);
+                Log.e(TAG, "shellTap error: " + e.getMessage());
+                return false;
+            } finally {
+                if (Thread.currentThread().isInterrupted() && proc != null) {
+                    try {
+                        proc.destroyForcibly();
+                    } catch (Exception ignored) {
+                    }
+                }
             }
         }
 
@@ -864,6 +916,7 @@ public class OrbScriptEngine {
 
         public void scroll(String direction, int count) {
             try {
+                throwIfStopRequested();
                 int action;
                 switch (direction.toLowerCase()) {
                     case "up": action = AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD; break;
@@ -875,18 +928,21 @@ public class OrbScriptEngine {
                 AccessibilityNodeInfo scrollable = findScrollable(root);
                 if (scrollable != null) {
                     for (int i = 0; i < Math.max(1, count); i++) {
+                        throwIfStopRequested();
                         scrollable.performAction(action);
                         if (i < count - 1) Thread.sleep(300);
                     }
                 }
                 root.recycle();
             } catch (Exception e) {
+                throwIfInterrupted(e);
                 Log.e(TAG, "scroll error: " + e.getMessage());
             }
         }
 
         public boolean swipe(int x1, int y1, int x2, int y2, int durationMs) {
             try {
+                throwIfStopRequested();
                 Path path = new Path();
                 path.moveTo(x1, y1);
                 path.lineTo(x2, y2);
@@ -904,8 +960,10 @@ public class OrbScriptEngine {
                     if (!result[0]) latch.countDown();
                 });
                 latch.await(5, TimeUnit.SECONDS);
+                throwIfStopRequested();
                 return result[0];
             } catch (Exception e) {
+                throwIfInterrupted(e);
                 return false;
             }
         }
@@ -923,31 +981,40 @@ public class OrbScriptEngine {
         public String screenshot() {
             // Delegate to the service's existing screenshot handler which returns base64
             try {
+                throwIfStopRequested();
                 String json = svc.handleScreenshotForScript();
+                throwIfStopRequested();
                 JSONObject obj = new JSONObject(json);
                 if (obj.optBoolean("ok")) {
                     return obj.optString("image", "");
                 }
                 return "";
             } catch (Exception e) {
+                throwIfInterrupted(e);
                 return "";
             }
         }
 
         public String ocr() {
             try {
+                throwIfStopRequested();
                 String json = svc.handleOcrForScript();
+                throwIfStopRequested();
                 return json; // Returns JSON array of lines
             } catch (Exception e) {
+                throwIfInterrupted(e);
                 return "[]";
             }
         }
 
         public String ocrFind(String text) {
             try {
+                throwIfStopRequested();
                 String json = svc.handleOcrFindForScript(text);
+                throwIfStopRequested();
                 return json; // Returns JSON object or null
             } catch (Exception e) {
+                throwIfInterrupted(e);
                 return null;
             }
         }
@@ -972,17 +1039,22 @@ public class OrbScriptEngine {
 
         public void sleep(int ms) {
             try {
+                throwIfStopRequested();
                 Thread.sleep(ms);
             } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+                throwIfInterrupted(e);
             }
         }
 
         public boolean waitForChange(int timeoutMs) {
             try {
+                throwIfStopRequested();
                 svc.uiChangeLatch = new CountDownLatch(1);
-                return svc.uiChangeLatch.await(timeoutMs, TimeUnit.MILLISECONDS);
+                boolean changed = svc.uiChangeLatch.await(timeoutMs, TimeUnit.MILLISECONDS);
+                throwIfStopRequested();
+                return changed;
             } catch (InterruptedException e) {
+                throwIfInterrupted(e);
                 return false;
             }
         }
@@ -990,8 +1062,9 @@ public class OrbScriptEngine {
         public boolean waitForText(String text, int timeoutMs) {
             long deadline = System.currentTimeMillis() + timeoutMs;
             while (System.currentTimeMillis() < deadline) {
+                throwIfStopRequested();
                 if (hasText(text)) return true;
-                try { Thread.sleep(500); } catch (InterruptedException e) { return false; }
+                try { Thread.sleep(500); } catch (InterruptedException e) { throwIfInterrupted(e); }
             }
             return false;
         }

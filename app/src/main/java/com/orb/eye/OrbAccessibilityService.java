@@ -14,7 +14,6 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
-import android.graphics.Point;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
@@ -44,8 +43,6 @@ import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.Text;
 import com.google.mlkit.vision.text.TextRecognition;
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
-import com.litongjava.android.paddle.ocr.OcrResultModel;
-import com.litongjava.android.paddle.ocr.Predictor;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -63,17 +60,20 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class OrbAccessibilityService extends AccessibilityService {
@@ -82,7 +82,6 @@ public class OrbAccessibilityService extends AccessibilityService {
     private static final int MAX_NOTIFICATIONS = 50;
     private static final String OCR_ENGINE_AUTO = "auto";
     private static final String OCR_ENGINE_MLKIT = "mlkit";
-    private static final String OCR_ENGINE_PADDLE = "paddle";
     private static final int OCR_MIN_TOKEN_SIZE_PX = 1;
     private static final int INSPECTOR_DEFAULT_MAX_DEPTH = 40;
     private static final int FIND_MAX_DIAGNOSTIC_NODES = 1200;
@@ -120,9 +119,6 @@ public class OrbAccessibilityService extends AccessibilityService {
     volatile CountDownLatch uiChangeLatch = new CountDownLatch(1);
     volatile String lastWindowPackage = "";
     volatile String lastWindowClass = "";
-    private final Object paddleLock = new Object();
-    private Predictor paddlePredictor;
-    private String paddleInitError = "";
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     // ===== Floating inspector (AutoJs6-style) =====
@@ -137,9 +133,16 @@ public class OrbAccessibilityService extends AccessibilityService {
     private LinearLayout inspectorBreadcrumbContainer;
     private LinearLayout inspectorControlView;
     private WindowManager.LayoutParams inspectorControlLayoutParams;
+    private TextView inspectorControlDragHandleTextView;
     private Button inspectorControlToggleButton;
     private Button inspectorControlRefreshButton;
+    private Button inspectorControlOpacityDownButton;
     private TextView inspectorControlOpacityTextView;
+    private Button inspectorControlOpacityUpButton;
+    private TextView inspectorControlJsStatusTextView;
+    private Button inspectorControlStopJsButton;
+    private Button inspectorControlMinimizeButton;
+    private Button inspectorControlCloseButton;
     private ListView inspectorTreeListView;
     private TextView inspectorInfoTextView;
     private Button inspectorParentButton;
@@ -154,7 +157,11 @@ public class OrbAccessibilityService extends AccessibilityService {
     private float inspectorOpacity = 0.88f;
     private boolean inspectorInfoExpanded = true;
     private boolean inspectorRunning = false;
+    private boolean inspectorControlMinimized = false;
     private String inspectorLastError = "";
+    private final Object jsExecutionLock = new Object();
+    private final LinkedHashMap<Long, String> runningJsExecutions = new LinkedHashMap<>();
+    private final AtomicLong runningJsTokenSeq = new AtomicLong(1L);
 
     @Override
     public void onServiceConnected() {
@@ -243,7 +250,6 @@ public class OrbAccessibilityService extends AccessibilityService {
         super.onDestroy();
         stopHttpServer();
         shutdownInspector();
-        releasePaddlePredictor();
     }
 
     // ===== HTTP Server =====
@@ -439,6 +445,12 @@ public class OrbAccessibilityService extends AccessibilityService {
             case "/inspector/controller/hide":
                 return handleInspectorControllerHide();
 
+            case "/inspector/controller/minimize":
+                return handleInspectorControllerMinimize();
+
+            case "/inspector/controller/restore":
+                return handleInspectorControllerRestore();
+
             case "/inspector/opacity":
             case "/inspector/alpha":
                 return handleInspectorOpacity(query);
@@ -537,6 +549,8 @@ public class OrbAccessibilityService extends AccessibilityService {
             case "/exec":
                 return handleExec(parseExecBody(body, query));
 
+            case "/exec/stop-all":
+            case "/exec/stopAll":
             case "/stopjs":
             case "/stop-js":
                 return handleStopJs(method, body, query);
@@ -617,6 +631,7 @@ public class OrbAccessibilityService extends AccessibilityService {
                 result.put("execution_id", executionId);
             } else {
                 stopped = scriptEngine != null ? scriptEngine.stopAllRunningScripts() : 0;
+                clearRunningJsExecutionState();
                 result.put("mode", "all");
             }
             result.put("ok", true);
@@ -690,10 +705,16 @@ public class OrbAccessibilityService extends AccessibilityService {
             scriptEngine = new OrbScriptEngine(this);
         }
         Long executionId = parseLongSafely(body.opt("executionId"));
-        return scriptEngine.execute(script, timeoutMs, executionId);
+        long runningToken = registerRunningJsExecution(body, script);
+        try {
+            return scriptEngine.execute(script, timeoutMs, executionId);
+        } finally {
+            finishRunningJsExecution(runningToken);
+        }
     }
 
     private void handleExecStreaming(Socket client, JSONObject body) {
+        long runningToken = 0L;
         try {
             String script = body.optString("script", "");
             if (script.isEmpty()) {
@@ -714,6 +735,7 @@ public class OrbAccessibilityService extends AccessibilityService {
                 scriptEngine = new OrbScriptEngine(this);
             }
             Long executionId = parseLongSafely(body.opt("executionId"));
+            runningToken = registerRunningJsExecution(body, script);
 
             // Send chunked NDJSON response header (no Content-Length)
             OutputStream out = client.getOutputStream();
@@ -736,7 +758,100 @@ public class OrbAccessibilityService extends AccessibilityService {
         } catch (Exception e) {
             Log.e(TAG, "exec streaming error: " + e.getMessage());
             try { client.close(); } catch (Exception ignored) {}
+        } finally {
+            if (runningToken > 0L) {
+                finishRunningJsExecution(runningToken);
+            }
         }
+    }
+
+    private long registerRunningJsExecution(JSONObject body, String script) {
+        String name = resolveRunningJsName(body, script);
+        if (name == null || name.trim().isEmpty()) {
+            name = "anonymous.js";
+        }
+        long token;
+        synchronized (jsExecutionLock) {
+            token = runningJsTokenSeq.getAndIncrement();
+            runningJsExecutions.put(token, name);
+        }
+        mainHandler.post(this::updateInspectorControlButtonsOnMain);
+        return token;
+    }
+
+    private void finishRunningJsExecution(long token) {
+        if (token <= 0L) return;
+        synchronized (jsExecutionLock) {
+            runningJsExecutions.remove(token);
+        }
+        mainHandler.post(this::updateInspectorControlButtonsOnMain);
+    }
+
+    private void clearRunningJsExecutionState() {
+        synchronized (jsExecutionLock) {
+            runningJsExecutions.clear();
+        }
+        mainHandler.post(this::updateInspectorControlButtonsOnMain);
+    }
+
+    private int getRunningJsExecutionCount() {
+        synchronized (jsExecutionLock) {
+            return runningJsExecutions.size();
+        }
+    }
+
+    private String getRunningJsStatusText() {
+        synchronized (jsExecutionLock) {
+            int count = runningJsExecutions.size();
+            if (count <= 0) return "JS: idle";
+            String first = runningJsExecutions.values().iterator().next();
+            if (count == 1) {
+                return "JS: " + shortenInspectorText(first, 28);
+            }
+            return "JS(" + count + "): " + shortenInspectorText(first, 22) + " +" + (count - 1);
+        }
+    }
+
+    private void stopAllRunningScriptsFromControllerOnMain() {
+        try {
+            if (scriptEngine != null) {
+                scriptEngine.stopAllRunningScripts();
+            }
+        } catch (Exception e) {
+            inspectorLastError = e.getMessage() != null ? e.getMessage() : "stop js failed";
+        } finally {
+            clearRunningJsExecutionState();
+        }
+    }
+
+    private String resolveRunningJsName(JSONObject body, String script) {
+        if (body != null) {
+            String explicit = body.optString("name", "");
+            if (explicit == null || explicit.trim().isEmpty()) {
+                explicit = body.optString("scriptName", "");
+            }
+            if (explicit == null || explicit.trim().isEmpty()) {
+                explicit = body.optString("jsName", "");
+            }
+            if (explicit != null && !explicit.trim().isEmpty()) {
+                return explicit.trim();
+            }
+        }
+
+        String[] lines = script != null ? script.split("\\r?\\n") : new String[0];
+        for (String line : lines) {
+            if (line == null) continue;
+            String t = line.trim();
+            if (t.isEmpty()) continue;
+            if (t.startsWith("//")) {
+                t = t.substring(2).trim();
+            } else if (t.startsWith("/*")) {
+                t = t.substring(2).trim();
+            }
+            if (t.isEmpty()) continue;
+            return t;
+        }
+        return "anonymous.js";
     }
 
     /**
@@ -1142,18 +1257,20 @@ public class OrbAccessibilityService extends AccessibilityService {
     // ===== UI Tree =====
 
     String getUiTree(String query) throws Exception {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return errorJson("No active window", "NOT_FOUND");
+        return runOnMainThreadBlocking(() -> {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return errorJson("No active window", "NOT_FOUND");
 
-        try {
-            String filterPkg = getQueryParam(query, "package");
-            int maxDepth = clampInt(getQueryInt(query, "maxDepth", 15), 0, 40);
+            try {
+                String filterPkg = getQueryParam(query, "package");
+                int maxDepth = clampInt(getQueryInt(query, "maxDepth", 15), 0, 40);
 
-            JSONObject tree = nodeToJson(root, 0, maxDepth, filterPkg);
-            return tree != null ? tree.toString() : errorJson("No matching content", "NOT_FOUND");
-        } finally {
-            root.recycle();
-        }
+                JSONObject tree = nodeToJson(root, 0, maxDepth, filterPkg);
+                return tree != null ? tree.toString() : errorJson("No matching content", "NOT_FOUND");
+            } finally {
+                root.recycle();
+            }
+        }, 2500L);
     }
 
     private JSONObject nodeToJson(AccessibilityNodeInfo node, int depth, int maxDepth, String filterPkg) throws Exception {
@@ -1212,60 +1329,62 @@ public class OrbAccessibilityService extends AccessibilityService {
      *   format=html        — render an in-browser tree inspector page
      */
     String getUiInspect(String query) throws Exception {
-        String format = getQueryParam(query, "format");
-        boolean htmlFormat = "html".equalsIgnoreCase(format);
-        String mode = getQueryParam(query, "mode");
-        boolean layoutMode = "layout".equalsIgnoreCase(mode);
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) {
-            if (htmlFormat) {
-                return renderInspectHtmlError("No active window");
-            }
-            return errorJson("No active window", "NOT_FOUND");
-        }
-
-        try {
-            String filterPkg = getQueryParam(query, "package");
-            int maxDepth = clampInt(getQueryInt(query, "maxDepth", 25), 0, 60);
-            boolean clickableOnly = getQueryBoolean(query, "clickableOnly", false)
-                    || getQueryBoolean(query, "clickable", false);
-            boolean textOnly = getQueryBoolean(query, "textOnly", false);
-            boolean enabledOnly = getQueryBoolean(query, "enabledOnly", false);
-            boolean visibleOnly = getQueryBoolean(query, "visibleOnly", false);
-            String contains = getQueryParam(query, "contains");
-
-            JSONArray nodes = new JSONArray();
-            collectInspectNodes(root, nodes,
-                    filterPkg, maxDepth,
-                    clickableOnly, textOnly, enabledOnly, visibleOnly, contains,
-                    0, -1, "0");
-
-            if (htmlFormat) {
-                if (layoutMode) {
-                    int sw = getResources().getDisplayMetrics().widthPixels;
-                    int sh = getResources().getDisplayMetrics().heightPixels;
-                    return renderInspectLayoutHtml(nodes, sw, sh, filterPkg, maxDepth);
+        return runOnMainThreadBlocking(() -> {
+            String format = getQueryParam(query, "format");
+            boolean htmlFormat = "html".equalsIgnoreCase(format);
+            String mode = getQueryParam(query, "mode");
+            boolean layoutMode = "layout".equalsIgnoreCase(mode);
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) {
+                if (htmlFormat) {
+                    return renderInspectHtmlError("No active window");
                 }
-                return renderInspectHtml(
-                        nodes,
-                        filterPkg,
-                        maxDepth,
-                        clickableOnly,
-                        textOnly,
-                        enabledOnly,
-                        visibleOnly,
-                        contains
-                );
+                return errorJson("No active window", "NOT_FOUND");
             }
 
-            JSONObject result = new JSONObject();
-            result.put("ok", true);
-            result.put("count", nodes.length());
-            result.put("nodes", nodes);
-            return result.toString();
-        } finally {
-            root.recycle();
-        }
+            try {
+                String filterPkg = getQueryParam(query, "package");
+                int maxDepth = clampInt(getQueryInt(query, "maxDepth", 25), 0, 60);
+                boolean clickableOnly = getQueryBoolean(query, "clickableOnly", false)
+                        || getQueryBoolean(query, "clickable", false);
+                boolean textOnly = getQueryBoolean(query, "textOnly", false);
+                boolean enabledOnly = getQueryBoolean(query, "enabledOnly", false);
+                boolean visibleOnly = getQueryBoolean(query, "visibleOnly", false);
+                String contains = getQueryParam(query, "contains");
+
+                JSONArray nodes = new JSONArray();
+                collectInspectNodes(root, nodes,
+                        filterPkg, maxDepth,
+                        clickableOnly, textOnly, enabledOnly, visibleOnly, contains,
+                        0, -1, "0");
+
+                if (htmlFormat) {
+                    if (layoutMode) {
+                        int sw = getResources().getDisplayMetrics().widthPixels;
+                        int sh = getResources().getDisplayMetrics().heightPixels;
+                        return renderInspectLayoutHtml(nodes, sw, sh, filterPkg, maxDepth);
+                    }
+                    return renderInspectHtml(
+                            nodes,
+                            filterPkg,
+                            maxDepth,
+                            clickableOnly,
+                            textOnly,
+                            enabledOnly,
+                            visibleOnly,
+                            contains
+                    );
+                }
+
+                JSONObject result = new JSONObject();
+                result.put("ok", true);
+                result.put("count", nodes.length());
+                result.put("nodes", nodes);
+                return result.toString();
+            } finally {
+                root.recycle();
+            }
+        }, 2500L);
     }
 
     private String renderInspectHtml(
@@ -1957,6 +2076,12 @@ public class OrbAccessibilityService extends AccessibilityService {
         return haystack.toLowerCase(Locale.ROOT).contains(needle.toLowerCase(Locale.ROOT));
     }
 
+    private String sanitizeUiText(CharSequence value) {
+        if (value == null) return "";
+        String text = value.toString().replace('\n', ' ').replace('\r', ' ').trim();
+        return text.isEmpty() ? "" : text;
+    }
+
     // ===== Floating Inspector (AutoJs6-style) =====
 
     private String handleInspectorStart(String query) throws Exception {
@@ -2088,6 +2213,48 @@ public class OrbAccessibilityService extends AccessibilityService {
         return outRef.get() != null ? outRef.get() : errorJson("Inspector controller hide failed", "INSPECTOR_FAILED");
     }
 
+    private String handleInspectorControllerMinimize() throws Exception {
+        final AtomicReference<String> outRef = new AtomicReference<>(null);
+        final AtomicReference<String> errRef = new AtomicReference<>(null);
+        final CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                ensureInspectorControllerOnMain();
+                setInspectorControllerMinimizedOnMain(true);
+                outRef.set(buildInspectorStateJsonOnMain().toString());
+            } catch (Exception e) {
+                errRef.set(e.getMessage());
+            } finally {
+                latch.countDown();
+            }
+        });
+        boolean done = latch.await(5, TimeUnit.SECONDS);
+        if (!done) return errorJson("Inspector controller minimize timed out", "TIMEOUT");
+        if (errRef.get() != null) return errorJson("Inspector controller minimize failed: " + errRef.get(), "INSPECTOR_FAILED");
+        return outRef.get() != null ? outRef.get() : errorJson("Inspector controller minimize failed", "INSPECTOR_FAILED");
+    }
+
+    private String handleInspectorControllerRestore() throws Exception {
+        final AtomicReference<String> outRef = new AtomicReference<>(null);
+        final AtomicReference<String> errRef = new AtomicReference<>(null);
+        final CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                ensureInspectorControllerOnMain();
+                setInspectorControllerMinimizedOnMain(false);
+                outRef.set(buildInspectorStateJsonOnMain().toString());
+            } catch (Exception e) {
+                errRef.set(e.getMessage());
+            } finally {
+                latch.countDown();
+            }
+        });
+        boolean done = latch.await(5, TimeUnit.SECONDS);
+        if (!done) return errorJson("Inspector controller restore timed out", "TIMEOUT");
+        if (errRef.get() != null) return errorJson("Inspector controller restore failed: " + errRef.get(), "INSPECTOR_FAILED");
+        return outRef.get() != null ? outRef.get() : errorJson("Inspector controller restore failed", "INSPECTOR_FAILED");
+    }
+
     private String handleInspectorOpacity(String query) throws Exception {
         final AtomicReference<String> outRef = new AtomicReference<>(null);
         final AtomicReference<String> errRef = new AtomicReference<>(null);
@@ -2194,10 +2361,13 @@ public class OrbAccessibilityService extends AccessibilityService {
         dragHandle.setTextColor(Color.WHITE);
         dragHandle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         dragHandle.setPadding(dp(8), dp(8), dp(8), dp(8));
+        dragHandle.setGravity(Gravity.CENTER);
+        inspectorControlDragHandleTextView = dragHandle;
         bar.addView(dragHandle);
 
         final float[] startTouch = new float[2];
         final int[] startPos = new int[2];
+        final boolean[] moved = new boolean[]{false};
         dragHandle.setOnTouchListener((v, event) -> {
             if (inspectorControlLayoutParams == null || inspectorWindowManager == null) return false;
             switch (event.getActionMasked()) {
@@ -2206,16 +2376,61 @@ public class OrbAccessibilityService extends AccessibilityService {
                     startTouch[1] = event.getRawY();
                     startPos[0] = inspectorControlLayoutParams.x;
                     startPos[1] = inspectorControlLayoutParams.y;
+                    moved[0] = false;
                     return true;
                 case MotionEvent.ACTION_MOVE:
-                    inspectorControlLayoutParams.x = startPos[0] + (int) (event.getRawX() - startTouch[0]);
-                    inspectorControlLayoutParams.y = startPos[1] + (int) (event.getRawY() - startTouch[1]);
+                    int nextX = startPos[0] + (int) (event.getRawX() - startTouch[0]);
+                    int nextY = startPos[1] + (int) (event.getRawY() - startTouch[1]);
+                    if (Math.abs(nextX - startPos[0]) > dp(2) || Math.abs(nextY - startPos[1]) > dp(2)) {
+                        moved[0] = true;
+                    }
+                    inspectorControlLayoutParams.x = nextX;
+                    inspectorControlLayoutParams.y = nextY;
                     inspectorWindowManager.updateViewLayout(inspectorControlView, inspectorControlLayoutParams);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    if (!moved[0] && inspectorControlMinimized) {
+                        setInspectorControllerMinimizedOnMain(false);
+                    }
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    moved[0] = false;
                     return true;
                 default:
                     return false;
             }
         });
+
+        Button minimizeButton = new Button(this);
+        minimizeButton.setText("□");
+        minimizeButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        minimizeButton.setMinWidth(0);
+        minimizeButton.setMinimumWidth(0);
+        minimizeButton.setMinimumHeight(0);
+        minimizeButton.setMinHeight(0);
+        minimizeButton.setWidth(dp(32));
+        minimizeButton.setHeight(dp(32));
+        minimizeButton.setPadding(0, 0, 0, 0);
+        minimizeButton.setOnClickListener(v -> setInspectorControllerMinimizedOnMain(true));
+        inspectorControlMinimizeButton = minimizeButton;
+        bar.addView(minimizeButton);
+
+        Button stopJsButton = new Button(this);
+        stopJsButton.setText("");
+        stopJsButton.setBackgroundColor(0xFF7F1D1D);
+        stopJsButton.setTextColor(Color.WHITE);
+        stopJsButton.setMinWidth(0);
+        stopJsButton.setMinimumWidth(0);
+        stopJsButton.setMinimumHeight(0);
+        stopJsButton.setMinHeight(0);
+        stopJsButton.setWidth(dp(36));
+        stopJsButton.setHeight(dp(36));
+        stopJsButton.setPadding(0, 0, 0, 0);
+        stopJsButton.setCompoundDrawablesWithIntrinsicBounds(android.R.drawable.ic_media_pause, 0, 0, 0);
+        stopJsButton.setContentDescription("Stop all JS");
+        stopJsButton.setOnClickListener(v -> stopAllRunningScriptsFromControllerOnMain());
+        inspectorControlStopJsButton = stopJsButton;
+        bar.addView(stopJsButton);
 
         Button toggleButton = new Button(this);
         toggleButton.setText("Inspect");
@@ -2253,6 +2468,7 @@ public class OrbAccessibilityService extends AccessibilityService {
         Button opacityDownButton = new Button(this);
         opacityDownButton.setText("-");
         opacityDownButton.setOnClickListener(v -> setInspectorOpacityOnMain(inspectorOpacity - 0.08f));
+        inspectorControlOpacityDownButton = opacityDownButton;
         bar.addView(opacityDownButton);
 
         TextView opacityText = new TextView(this);
@@ -2265,16 +2481,92 @@ public class OrbAccessibilityService extends AccessibilityService {
         Button opacityUpButton = new Button(this);
         opacityUpButton.setText("+");
         opacityUpButton.setOnClickListener(v -> setInspectorOpacityOnMain(inspectorOpacity + 0.08f));
+        inspectorControlOpacityUpButton = opacityUpButton;
         bar.addView(opacityUpButton);
+
+        TextView jsStatusText = new TextView(this);
+        jsStatusText.setTextColor(Color.WHITE);
+        jsStatusText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        jsStatusText.setPadding(dp(8), dp(8), dp(8), dp(8));
+        jsStatusText.setText("JS: idle");
+        inspectorControlJsStatusTextView = jsStatusText;
+        bar.addView(jsStatusText);
 
         Button closeButton = new Button(this);
         closeButton.setText("X");
         closeButton.setOnClickListener(v -> removeInspectorControllerOnMain());
+        inspectorControlCloseButton = closeButton;
         bar.addView(closeButton);
         return bar;
     }
 
+    private void setInspectorControllerMinimizedOnMain(boolean minimized) {
+        inspectorControlMinimized = minimized;
+        updateInspectorControlButtonsOnMain();
+    }
+
+    private void applyInspectorControllerMinimizedUiOnMain() {
+        int expandedVisibility = inspectorControlMinimized ? View.GONE : View.VISIBLE;
+        if (inspectorControlMinimizeButton != null) {
+            inspectorControlMinimizeButton.setVisibility(expandedVisibility);
+        }
+        if (inspectorControlToggleButton != null) {
+            inspectorControlToggleButton.setVisibility(expandedVisibility);
+        }
+        if (inspectorControlRefreshButton != null) {
+            inspectorControlRefreshButton.setVisibility(expandedVisibility);
+        }
+        if (inspectorControlOpacityTextView != null) {
+            inspectorControlOpacityTextView.setVisibility(expandedVisibility);
+        }
+        if (inspectorControlOpacityDownButton != null) {
+            inspectorControlOpacityDownButton.setVisibility(expandedVisibility);
+        }
+        if (inspectorControlOpacityUpButton != null) {
+            inspectorControlOpacityUpButton.setVisibility(expandedVisibility);
+        }
+        if (inspectorControlJsStatusTextView != null) {
+            inspectorControlJsStatusTextView.setVisibility(expandedVisibility);
+        }
+        if (inspectorControlStopJsButton != null) {
+            inspectorControlStopJsButton.setVisibility(expandedVisibility);
+        }
+        if (inspectorControlCloseButton != null) {
+            inspectorControlCloseButton.setVisibility(expandedVisibility);
+        }
+
+        if (inspectorControlDragHandleTextView != null) {
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) inspectorControlDragHandleTextView.getLayoutParams();
+            if (lp == null) {
+                lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            }
+            if (inspectorControlMinimized) {
+                inspectorControlDragHandleTextView.setText("Orb");
+                inspectorControlDragHandleTextView.setPadding(dp(6), dp(2), dp(6), dp(2));
+                inspectorControlDragHandleTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                lp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+                lp.height = dp(22);
+            } else {
+                inspectorControlDragHandleTextView.setText("Orb");
+                inspectorControlDragHandleTextView.setPadding(dp(8), dp(8), dp(8), dp(8));
+                inspectorControlDragHandleTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                lp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+                lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+            }
+            inspectorControlDragHandleTextView.setLayoutParams(lp);
+        }
+
+        if (inspectorControlView != null) {
+            if (inspectorControlMinimized) {
+                inspectorControlView.setPadding(0, 0, 0, 0);
+            } else {
+                inspectorControlView.setPadding(dp(6), dp(6), dp(6), dp(6));
+            }
+        }
+    }
+
     private void updateInspectorControlButtonsOnMain() {
+        applyInspectorControllerMinimizedUiOnMain();
         if (inspectorControlToggleButton != null) {
             inspectorControlToggleButton.setText(inspectorRunning ? "Stop" : "Inspect");
         }
@@ -2285,6 +2577,73 @@ public class OrbAccessibilityService extends AccessibilityService {
             int percent = Math.round(inspectorOpacity * 100f);
             inspectorControlOpacityTextView.setText(percent + "%");
         }
+        if (inspectorControlJsStatusTextView != null) {
+            inspectorControlJsStatusTextView.setText(getRunningJsStatusText());
+        }
+        if (inspectorControlStopJsButton != null) {
+            inspectorControlStopJsButton.setEnabled(getRunningJsExecutionCount() > 0);
+        }
+    }
+
+    private static class InspectorOverlayVisibilityState {
+        int controlVisibility = View.GONE;
+        int panelVisibility = View.GONE;
+        int breadcrumbVisibility = View.GONE;
+        int boundsVisibility = View.GONE;
+    }
+
+    private InspectorOverlayVisibilityState hideInspectorOverlaysForCapture() throws Exception {
+        final AtomicReference<InspectorOverlayVisibilityState> outRef = new AtomicReference<>(null);
+        final AtomicReference<String> errRef = new AtomicReference<>(null);
+        final CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                InspectorOverlayVisibilityState state = new InspectorOverlayVisibilityState();
+                if (inspectorControlView != null && inspectorControlView.getParent() != null) {
+                    state.controlVisibility = inspectorControlView.getVisibility();
+                    inspectorControlView.setVisibility(View.INVISIBLE);
+                }
+                if (inspectorPanelView != null && inspectorPanelView.getParent() != null) {
+                    state.panelVisibility = inspectorPanelView.getVisibility();
+                    inspectorPanelView.setVisibility(View.INVISIBLE);
+                }
+                if (inspectorBreadcrumbPanelView != null && inspectorBreadcrumbPanelView.getParent() != null) {
+                    state.breadcrumbVisibility = inspectorBreadcrumbPanelView.getVisibility();
+                    inspectorBreadcrumbPanelView.setVisibility(View.INVISIBLE);
+                }
+                if (inspectorBoundsView != null && inspectorBoundsView.getParent() != null) {
+                    state.boundsVisibility = inspectorBoundsView.getVisibility();
+                    inspectorBoundsView.setVisibility(View.INVISIBLE);
+                }
+                outRef.set(state);
+            } catch (Exception e) {
+                errRef.set(e.getMessage());
+            } finally {
+                latch.countDown();
+            }
+        });
+        boolean done = latch.await(2, TimeUnit.SECONDS);
+        if (!done) throw new IllegalStateException("Hide inspector overlays timed out");
+        if (errRef.get() != null) throw new IllegalStateException(errRef.get());
+        return outRef.get();
+    }
+
+    private void restoreInspectorOverlaysAfterCapture(InspectorOverlayVisibilityState state) {
+        if (state == null) return;
+        mainHandler.post(() -> {
+            if (inspectorControlView != null && inspectorControlView.getParent() != null) {
+                inspectorControlView.setVisibility(state.controlVisibility);
+            }
+            if (inspectorPanelView != null && inspectorPanelView.getParent() != null) {
+                inspectorPanelView.setVisibility(state.panelVisibility);
+            }
+            if (inspectorBreadcrumbPanelView != null && inspectorBreadcrumbPanelView.getParent() != null) {
+                inspectorBreadcrumbPanelView.setVisibility(state.breadcrumbVisibility);
+            }
+            if (inspectorBoundsView != null && inspectorBoundsView.getParent() != null) {
+                inspectorBoundsView.setVisibility(state.boundsVisibility);
+            }
+        });
     }
 
     private void startInspectorOnMain(int maxDepth) throws Exception {
@@ -2990,7 +3349,10 @@ public class OrbAccessibilityService extends AccessibilityService {
         out.put("opacity", (double) inspectorOpacity);
         out.put("package", inspectorRootNode != null ? inspectorRootNode.pkg : lastWindowPackage);
         out.put("controllerVisible", inspectorControlView != null && inspectorControlView.getParent() != null);
+        out.put("controllerMinimized", inspectorControlMinimized);
         out.put("infoExpanded", inspectorInfoExpanded);
+        out.put("jsRunningCount", getRunningJsExecutionCount());
+        out.put("jsRunningLabel", getRunningJsStatusText());
         if (inspectorSelectedNode != null) {
             JSONObject selected = new JSONObject();
             selected.put("path", inspectorSelectedNode.path);
@@ -3337,57 +3699,59 @@ public class OrbAccessibilityService extends AccessibilityService {
      *   inputs=6     — max number of input_fields (1..20)
      */
     private String getScreenSummary(String query) throws Exception {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return errorJson("No active window", "NOT_FOUND");
+        return runOnMainThreadBlocking(() -> {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return errorJson("No active window", "NOT_FOUND");
 
-        try {
-            String filterPkg = getQueryParam(query, "package");
-            int topLimit = clampInt(getQueryInt(query, "top", 6), 1, 20);
-            int inputLimit = clampInt(getQueryInt(query, "inputs", 6), 1, 20);
+            try {
+                String filterPkg = getQueryParam(query, "package");
+                int topLimit = clampInt(getQueryInt(query, "top", 6), 1, 20);
+                int inputLimit = clampInt(getQueryInt(query, "inputs", 6), 1, 20);
 
-            ArrayList<ScreenSummaryNode> nodes = new ArrayList<>();
-            collectScreenSummaryNodes(root, nodes, filterPkg, false, 0);
+                ArrayList<ScreenSummaryNode> nodes = new ArrayList<>();
+                collectScreenSummaryNodes(root, nodes, filterPkg, false, 0);
 
-            int interactiveCount = 0;
-            int textCount = 0;
-            int scrollContainers = 0;
-            String packageName = "";
-            for (ScreenSummaryNode node : nodes) {
-                if (packageName.isEmpty() && node.pkg != null && !node.pkg.isEmpty()) {
-                    packageName = node.pkg;
+                int interactiveCount = 0;
+                int textCount = 0;
+                int scrollContainers = 0;
+                String packageName = "";
+                for (ScreenSummaryNode node : nodes) {
+                    if (packageName.isEmpty() && node.pkg != null && !node.pkg.isEmpty()) {
+                        packageName = node.pkg;
+                    }
+                    if (node.visible && node.enabled && (node.clickable || node.longClickable || node.editable)) {
+                        interactiveCount++;
+                    }
+                    if (node.visible && ((!node.text.isEmpty()) || (!node.desc.isEmpty()))) {
+                        textCount++;
+                    }
+                    if (node.visible && node.scrollable) {
+                        scrollContainers++;
+                    }
                 }
-                if (node.visible && node.enabled && (node.clickable || node.longClickable || node.editable)) {
-                    interactiveCount++;
+                if (packageName.isEmpty()) {
+                    packageName = lastWindowPackage != null ? lastWindowPackage : "";
                 }
-                if (node.visible && ((!node.text.isEmpty()) || (!node.desc.isEmpty()))) {
-                    textCount++;
-                }
-                if (node.visible && node.scrollable) {
-                    scrollContainers++;
-                }
+
+                String activity = (lastWindowClass != null && !lastWindowClass.isEmpty())
+                        ? lastWindowClass
+                        : (!nodes.isEmpty() ? nodes.get(0).className : "");
+
+                JSONObject result = new JSONObject();
+                result.put("ok", true);
+                result.put("package", packageName);
+                result.put("activity", activity);
+                result.put("title", detectScreenTitle(nodes));
+                result.put("interactive_count", interactiveCount);
+                result.put("text_count", textCount);
+                result.put("scroll_containers", scrollContainers);
+                result.put("top_clickables", buildSummaryTopClickables(nodes, topLimit));
+                result.put("input_fields", buildSummaryInputFields(nodes, inputLimit));
+                return result.toString();
+            } finally {
+                root.recycle();
             }
-            if (packageName.isEmpty()) {
-                packageName = lastWindowPackage != null ? lastWindowPackage : "";
-            }
-
-            String activity = (lastWindowClass != null && !lastWindowClass.isEmpty())
-                    ? lastWindowClass
-                    : (!nodes.isEmpty() ? nodes.get(0).className : "");
-
-            JSONObject result = new JSONObject();
-            result.put("ok", true);
-            result.put("package", packageName);
-            result.put("activity", activity);
-            result.put("title", detectScreenTitle(nodes));
-            result.put("interactive_count", interactiveCount);
-            result.put("text_count", textCount);
-            result.put("scroll_containers", scrollContainers);
-            result.put("top_clickables", buildSummaryTopClickables(nodes, topLimit));
-            result.put("input_fields", buildSummaryInputFields(nodes, inputLimit));
-            return result.toString();
-        } finally {
-            root.recycle();
-        }
+        }, 2500L);
     }
 
     private void collectScreenSummaryNodes(
@@ -3694,6 +4058,34 @@ public class OrbAccessibilityService extends AccessibilityService {
         }
     }
 
+    private <T> T runOnMainThreadBlocking(Callable<T> task, long timeoutMs) throws Exception {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return task.call();
+        }
+
+        final AtomicReference<T> outRef = new AtomicReference<>(null);
+        final AtomicReference<Exception> errRef = new AtomicReference<>(null);
+        final CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                outRef.set(task.call());
+            } catch (Exception e) {
+                errRef.set(e);
+            } finally {
+                latch.countDown();
+            }
+        });
+
+        boolean done = latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+        if (!done) {
+            throw new IllegalStateException("Main-thread accessibility read timed out");
+        }
+        if (errRef.get() != null) {
+            throw errRef.get();
+        }
+        return outRef.get();
+    }
+
     /**
      * GET /screen — flat list of elements with optional filters.
      * Query params:
@@ -3703,24 +4095,157 @@ public class OrbAccessibilityService extends AccessibilityService {
      * Each element now includes centerX/centerY for direct use with /tap.
      */
     private String getScreenElements(String query) throws Exception {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return errorJson("No active window", "NOT_FOUND");
+        return runOnMainThreadBlocking(() -> {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return errorJson("No active window", "NOT_FOUND");
 
-        boolean onlyScrollable = query.contains("scrollable=true");
-        boolean onlyEditable = query.contains("editable=true");
-        String filterPkg = null;
-        if (query.contains("package=")) {
-            filterPkg = query.split("package=")[1].split("&")[0];
-        }
+            try {
+                boolean onlyScrollable = query.contains("scrollable=true");
+                boolean onlyEditable = query.contains("editable=true");
+                String filterPkg = null;
+                if (query.contains("package=")) {
+                    filterPkg = query.split("package=")[1].split("&")[0];
+                }
 
-        JSONArray elements = new JSONArray();
-        collectScreenElements(root, elements, onlyScrollable, onlyEditable, filterPkg, false);
+                JSONArray elements = new JSONArray();
+                collectScreenElements(root, elements, onlyScrollable, onlyEditable, filterPkg, false);
 
-        root.recycle();
-        JSONObject result = new JSONObject();
-        result.put("ok", true);
-        result.put("elements", elements);
-        return result.toString();
+                JSONObject result = new JSONObject();
+                result.put("ok", true);
+                result.put("elements", elements);
+                return result.toString();
+            } finally {
+                root.recycle();
+            }
+        }, 2500L);
+    }
+
+    String getScreenElementsForScript() throws Exception {
+        return runOnMainThreadBlocking(() -> {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return "[]";
+
+            try {
+                JSONArray arr = new JSONArray();
+                List<AccessibilityNodeInfo> allNodes = new ArrayList<>();
+                Queue<AccessibilityNodeInfo> queue = new ArrayDeque<>();
+                queue.add(root);
+                allNodes.add(root);
+                while (!queue.isEmpty()) {
+                    AccessibilityNodeInfo node = queue.poll();
+                    String text = sanitizeUiText(node.getText());
+                    String desc = sanitizeUiText(node.getContentDescription());
+                    if (!text.isEmpty() || !desc.isEmpty() || node.isClickable()) {
+                        Rect bounds = new Rect();
+                        node.getBoundsInScreen(bounds);
+                        JSONObject obj = new JSONObject();
+                        obj.put("text", text);
+                        obj.put("desc", desc);
+                        obj.put("centerX", bounds.centerX());
+                        obj.put("centerY", bounds.centerY());
+                        obj.put("clickable", node.isClickable());
+                        obj.put("className", node.getClassName() != null ? node.getClassName().toString() : "");
+                        arr.put(obj);
+                    }
+                    for (int i = 0; i < node.getChildCount(); i++) {
+                        AccessibilityNodeInfo child = node.getChild(i);
+                        if (child != null) {
+                            queue.add(child);
+                            allNodes.add(child);
+                        }
+                    }
+                }
+                for (AccessibilityNodeInfo node : allNodes) {
+                    node.recycle();
+                }
+                return arr.toString();
+            } catch (Exception e) {
+                Log.e(TAG, "getScreenElementsForScript error: " + e.getMessage());
+                return "[]";
+            }
+        }, 2500L);
+    }
+
+    String findTextForScript(String text) throws Exception {
+        return runOnMainThreadBlocking(() -> {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return null;
+            try {
+                List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(text);
+                if (nodes == null || nodes.isEmpty()) {
+                    return null;
+                }
+                AccessibilityNodeInfo node = nodes.get(0);
+                Rect bounds = new Rect();
+                node.getBoundsInScreen(bounds);
+                JSONObject obj = new JSONObject();
+                obj.put("text", sanitizeUiText(node.getText()));
+                obj.put("desc", sanitizeUiText(node.getContentDescription()));
+                obj.put("centerX", bounds.centerX());
+                obj.put("centerY", bounds.centerY());
+                obj.put("clickable", node.isClickable());
+                return obj.toString();
+            } finally {
+                root.recycle();
+            }
+        }, 2500L);
+    }
+
+    boolean hasTextForScript(String text) throws Exception {
+        Boolean result = runOnMainThreadBlocking(() -> {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return Boolean.FALSE;
+            try {
+                List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(text);
+                return nodes != null && !nodes.isEmpty();
+            } finally {
+                root.recycle();
+            }
+        }, 2500L);
+        return Boolean.TRUE.equals(result);
+    }
+
+    String getVisibleTextForScript() throws Exception {
+        return runOnMainThreadBlocking(() -> {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return "";
+            try {
+                StringBuilder sb = new StringBuilder();
+                List<AccessibilityNodeInfo> allNodes = new ArrayList<>();
+                Queue<AccessibilityNodeInfo> queue = new ArrayDeque<>();
+                queue.add(root);
+                allNodes.add(root);
+                while (!queue.isEmpty()) {
+                    AccessibilityNodeInfo node = queue.poll();
+                    if (node.getText() != null) {
+                        String value = sanitizeUiText(node.getText());
+                        if (!value.isEmpty()) {
+                            sb.append(value).append(' ');
+                        }
+                    }
+                    if (node.getContentDescription() != null) {
+                        String value = sanitizeUiText(node.getContentDescription());
+                        if (!value.isEmpty()) {
+                            sb.append(value).append(' ');
+                        }
+                    }
+                    for (int i = 0; i < node.getChildCount(); i++) {
+                        AccessibilityNodeInfo child = node.getChild(i);
+                        if (child != null) {
+                            queue.add(child);
+                            allNodes.add(child);
+                        }
+                    }
+                }
+                for (AccessibilityNodeInfo node : allNodes) {
+                    node.recycle();
+                }
+                return sb.toString();
+            } catch (Exception e) {
+                Log.e(TAG, "getVisibleTextForScript error: " + e.getMessage());
+                return "";
+            }
+        }, 2500L);
     }
 
     /**
@@ -4042,13 +4567,18 @@ public class OrbAccessibilityService extends AccessibilityService {
     // ===== Focused Element =====
 
     private String getFocusedElement() throws Exception {
-        AccessibilityNodeInfo focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-        if (focused == null) focused = findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY);
-        if (focused == null) return errorJson("No focused element", "NOT_FOUND");
+        return runOnMainThreadBlocking(() -> {
+            AccessibilityNodeInfo focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+            if (focused == null) focused = findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY);
+            if (focused == null) return errorJson("No focused element", "NOT_FOUND");
 
-        JSONObject obj = nodeToJson(focused, 0, 0, null);
-        focused.recycle();
-        return obj != null ? obj.toString() : errorJson("Node unavailable", "NOT_FOUND");
+            try {
+                JSONObject obj = nodeToJson(focused, 0, 0, null);
+                return obj != null ? obj.toString() : errorJson("Node unavailable", "NOT_FOUND");
+            } finally {
+                focused.recycle();
+            }
+        }, 2500L);
     }
 
     // ===== Tap by coordinates =====
@@ -5148,50 +5678,57 @@ public class OrbAccessibilityService extends AccessibilityService {
             throw new IllegalStateException("takeScreenshot requires API 30+, device is API " + Build.VERSION.SDK_INT);
         }
 
+        InspectorOverlayVisibilityState overlayState = hideInspectorOverlaysForCapture();
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<Bitmap> bitmapRef = new AtomicReference<>(null);
         AtomicReference<String> errorRef = new AtomicReference<>(null);
+        try {
+            // Give SurfaceFlinger one frame to apply overlay visibility changes before capture.
+            Thread.sleep(80L);
 
-        takeScreenshot(Display.DEFAULT_DISPLAY,
-                getMainExecutor(),
-                new TakeScreenshotCallback() {
-                    @Override
-                    public void onSuccess(ScreenshotResult screenshot) {
-                        try {
-                            Bitmap hw = Bitmap.wrapHardwareBuffer(
-                                    screenshot.getHardwareBuffer(),
-                                    screenshot.getColorSpace()
-                            );
-                            if (hw == null) {
-                                errorRef.set("Bitmap wrap failed");
-                                return;
-                            }
-                            Bitmap bmp = hw.copy(Bitmap.Config.ARGB_8888, false);
-                            bitmapRef.set(bmp);
-                        } catch (Exception e) {
-                            errorRef.set("Bitmap encode failed: " + e.getMessage());
-                        } finally {
+            takeScreenshot(Display.DEFAULT_DISPLAY,
+                    getMainExecutor(),
+                    new TakeScreenshotCallback() {
+                        @Override
+                        public void onSuccess(ScreenshotResult screenshot) {
                             try {
-                                screenshot.getHardwareBuffer().close();
-                            } catch (Exception ignored) {}
+                                Bitmap hw = Bitmap.wrapHardwareBuffer(
+                                        screenshot.getHardwareBuffer(),
+                                        screenshot.getColorSpace()
+                                );
+                                if (hw == null) {
+                                    errorRef.set("Bitmap wrap failed");
+                                    return;
+                                }
+                                Bitmap bmp = hw.copy(Bitmap.Config.ARGB_8888, false);
+                                bitmapRef.set(bmp);
+                            } catch (Exception e) {
+                                errorRef.set("Bitmap encode failed: " + e.getMessage());
+                            } finally {
+                                try {
+                                    screenshot.getHardwareBuffer().close();
+                                } catch (Exception ignored) {}
+                                latch.countDown();
+                            }
+                        }
+
+                        @Override
+                        public void onFailure(int errorCode) {
+                            errorRef.set("takeScreenshot failed with code " + errorCode);
                             latch.countDown();
                         }
-                    }
+                    });
 
-                    @Override
-                    public void onFailure(int errorCode) {
-                        errorRef.set("takeScreenshot failed with code " + errorCode);
-                        latch.countDown();
-                    }
-                });
+            boolean done = latch.await(10, TimeUnit.SECONDS);
+            if (!done) throw new IllegalStateException("Screenshot timed out");
+            if (errorRef.get() != null) throw new IllegalStateException(errorRef.get());
 
-        boolean done = latch.await(10, TimeUnit.SECONDS);
-        if (!done) throw new IllegalStateException("Screenshot timed out");
-        if (errorRef.get() != null) throw new IllegalStateException(errorRef.get());
-
-        Bitmap bmp = bitmapRef.get();
-        if (bmp == null) throw new IllegalStateException("Screenshot bitmap unavailable");
-        return bmp;
+            Bitmap bmp = bitmapRef.get();
+            if (bmp == null) throw new IllegalStateException("Screenshot bitmap unavailable");
+            return bmp;
+        } finally {
+            restoreInspectorOverlaysAfterCapture(overlayState);
+        }
     }
 
     private Bitmap decodeBase64Bitmap(String imageBase64) throws Exception {
@@ -5252,31 +5789,18 @@ public class OrbAccessibilityService extends AccessibilityService {
         String v = engine.trim().toLowerCase(Locale.ROOT);
         if (v.isEmpty()) return OCR_ENGINE_AUTO;
         if ("mlkit_chinese".equals(v) || "mlkit".equals(v)) return OCR_ENGINE_MLKIT;
-        if ("paddle".equals(v) || "paddle_lite".equals(v)) return OCR_ENGINE_PADDLE;
         if ("auto".equals(v)) return OCR_ENGINE_AUTO;
         return OCR_ENGINE_AUTO;
     }
 
     private OcrRunResult runOcrWithEngine(Bitmap bitmap, String engine) throws Exception {
         String normalized = normalizeOcrEngine(engine);
-        if (OCR_ENGINE_PADDLE.equals(normalized)) {
-            List<OcrLineData> lines = splitOcrLinesOnWhitespace(runOcrPaddle(bitmap));
-            return new OcrRunResult("paddle_lite", lines);
-        }
         if (OCR_ENGINE_MLKIT.equals(normalized)) {
             List<OcrLineData> lines = splitOcrLinesOnWhitespace(runOcrMlkit(bitmap));
             return new OcrRunResult("mlkit_chinese", lines);
         }
 
-        // auto: try Paddle first, then fallback to ML Kit.
-        try {
-            List<OcrLineData> lines = splitOcrLinesOnWhitespace(runOcrPaddle(bitmap));
-            if (lines != null && !lines.isEmpty()) {
-                return new OcrRunResult("paddle_lite", lines);
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "Paddle OCR unavailable in auto mode, fallback to ML Kit: " + t.getMessage());
-        }
+        // Paddle OCR was removed to eliminate unsupported native libraries.
         List<OcrLineData> lines = splitOcrLinesOnWhitespace(runOcrMlkit(bitmap));
         return new OcrRunResult("mlkit_chinese", lines);
     }
@@ -5351,88 +5875,6 @@ public class OrbAccessibilityService extends AccessibilityService {
             out.add(line);
         }
         return out;
-    }
-
-    private Predictor ensurePaddlePredictor() {
-        synchronized (paddleLock) {
-            if (paddlePredictor != null && paddlePredictor.isLoaded()) {
-                return paddlePredictor;
-            }
-            try {
-                Predictor predictor = new Predictor();
-                boolean ok = predictor.init(getApplicationContext());
-                if (!ok) {
-                    paddleInitError = "predictor init returned false";
-                    return null;
-                }
-                paddlePredictor = predictor;
-                paddleInitError = "";
-                Log.i(TAG, "Paddle OCR predictor initialized");
-                return paddlePredictor;
-            } catch (Throwable t) {
-                paddleInitError = t.getMessage() != null ? t.getMessage() : t.toString();
-                Log.e(TAG, "Paddle OCR init failed: " + paddleInitError);
-                return null;
-            }
-        }
-    }
-
-    private void releasePaddlePredictor() {
-        synchronized (paddleLock) {
-            if (paddlePredictor != null) {
-                try {
-                    paddlePredictor.releaseModel();
-                } catch (Throwable ignored) {}
-                paddlePredictor = null;
-            }
-        }
-    }
-
-    private Rect rectFromPaddlePoints(List<Point> points, int imageWidth, int imageHeight) {
-        if (points == null || points.isEmpty()) return null;
-        int left = imageWidth;
-        int top = imageHeight;
-        int right = 0;
-        int bottom = 0;
-        for (Point p : points) {
-            if (p == null) continue;
-            left = Math.min(left, p.x);
-            top = Math.min(top, p.y);
-            right = Math.max(right, p.x);
-            bottom = Math.max(bottom, p.y);
-        }
-        if (right <= left || bottom <= top) return null;
-        left = clamp(left, 0, Math.max(0, imageWidth - 1));
-        top = clamp(top, 0, Math.max(0, imageHeight - 1));
-        right = clamp(right, left + 1, Math.max(left + 1, imageWidth));
-        bottom = clamp(bottom, top + 1, Math.max(top + 1, imageHeight));
-        return new Rect(left, top, right, bottom);
-    }
-
-    private List<OcrLineData> runOcrPaddle(Bitmap bitmap) throws Exception {
-        Predictor predictor = ensurePaddlePredictor();
-        if (predictor == null) {
-            throw new IllegalStateException("Paddle OCR unavailable: " + paddleInitError);
-        }
-
-        synchronized (paddleLock) {
-            predictor.setInputImage(bitmap);
-            boolean ok = predictor.runModel();
-            if (!ok) {
-                throw new IllegalStateException("Paddle OCR runModel returned false");
-            }
-            ArrayList<OcrResultModel> results = predictor.outputResults();
-            List<OcrLineData> out = new ArrayList<>();
-            for (OcrResultModel model : results) {
-                if (model == null) continue;
-                String text = model.getLabel();
-                if (text == null || text.trim().isEmpty()) continue;
-                Rect rect = rectFromPaddlePoints(model.getPoints(), bitmap.getWidth(), bitmap.getHeight());
-                if (rect == null) continue;
-                out.add(new OcrLineData(text, rect));
-            }
-            return out;
-        }
     }
 
     private List<OcrLineData> runOcrMlkit(Bitmap bitmap) throws Exception {
