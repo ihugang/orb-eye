@@ -1,6 +1,7 @@
 package com.cb.monitor;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.graphics.Color;
@@ -18,10 +19,18 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
+import com.cb.monitor.model.TaskEnvelope;
+import com.cb.monitor.model.TaskResultPayload;
+import com.cb.monitor.network.TaskCenterClient;
+import com.cb.monitor.storage.ScriptStore;
 import com.cb.monitor.storage.WorkerPrefs;
 import com.cb.monitor.storage.WorkerStatsStore;
+import com.cb.monitor.worker.TaskRunner;
 import com.cb.monitor.worker.WorkerForegroundService;
+
+import org.json.JSONObject;
 
 import java.text.SimpleDateFormat;
 import java.net.URI;
@@ -60,6 +69,7 @@ public class MainActivity extends Activity {
     private TextView versionInfoView;
     private TextView heroStatusBadge;
     private TextView heroStatusSummary;
+    private ScriptStore scriptStore;
     private WorkerStatsStore workerStatsStore;
     private WorkerPrefs workerPrefs;
 
@@ -71,6 +81,7 @@ public class MainActivity extends Activity {
         }
         workerStatsStore = new WorkerStatsStore(this);
         workerPrefs = new WorkerPrefs(this);
+        scriptStore = new ScriptStore(this);
 
         ScrollView scrollView = new ScrollView(this);
         scrollView.setFillViewport(true);
@@ -85,6 +96,7 @@ public class MainActivity extends Activity {
         ));
 
         page.addView(createHeroCard());
+        page.addView(createPrimaryAutomationButton());
         page.addView(createMetricsRow());
         page.addView(createSectionTitle(
                 getString(R.string.main_section_runtime_title),
@@ -135,6 +147,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refreshUi();
+        probeDeviceApprovalState();
     }
 
     private void applyRootPadding(LinearLayout page) {
@@ -188,17 +201,10 @@ public class MainActivity extends Activity {
         title.setTypeface(Typeface.SERIF, Typeface.BOLD);
         titleRow.addView(title);
 
-        TextView subtitle = new TextView(this);
-        subtitle.setText(R.string.main_subtitle);
-        subtitle.setTextColor(HERO_TEXT_SECONDARY);
-        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        subtitle.setLineSpacing(0f, 1.1f);
-        hero.addView(subtitle);
-
         LinearLayout statusRow = new LinearLayout(this);
         statusRow.setOrientation(LinearLayout.HORIZONTAL);
         statusRow.setGravity(Gravity.CENTER_VERTICAL);
-        statusRow.setPadding(0, dp(16), 0, 0);
+        statusRow.setPadding(0, dp(10), 0, 0);
         hero.addView(statusRow);
 
         heroStatusBadge = new TextView(this);
@@ -225,18 +231,28 @@ public class MainActivity extends Activity {
         todayCompletedView = createMetricTile(
                 row,
                 getString(R.string.metric_today),
-                getString(R.string.metric_today_hint),
                 "0",
                 HERO_ACCENT
         );
         totalCompletedView = createMetricTile(
                 row,
                 getString(R.string.metric_lifetime),
-                getString(R.string.metric_lifetime_hint),
                 "0",
                 Color.parseColor("#18794E")
         );
         return row;
+    }
+
+    private LinearLayout createPrimaryAutomationButton() {
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setPadding(0, dp(14), 0, 0);
+        container.addView(createActionButton(
+                getString(R.string.action_execute_js_automation),
+                true,
+                v -> showScriptExecuteDialog()
+        ));
+        return container;
     }
 
     private LinearLayout createRuntimeCard() {
@@ -344,7 +360,7 @@ public class MainActivity extends Activity {
         return icon;
     }
 
-    private TextView createMetricTile(LinearLayout parent, String label, String hint, String initialValue, int accent) {
+    private TextView createMetricTile(LinearLayout parent, String label, String initialValue, int accent) {
         LinearLayout tile = createCard(CARD_BACKGROUND, BORDER_COLOR, 1f);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         params.rightMargin = parent.getChildCount() == 0 ? dp(8) : 0;
@@ -368,20 +384,13 @@ public class MainActivity extends Activity {
         valueView.setPadding(0, dp(10), 0, dp(4));
         tile.addView(valueView);
 
-        TextView hintView = new TextView(this);
-        hintView.setText(hint);
-        hintView.setTextColor(INK_SECONDARY);
-        hintView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        hintView.setLineSpacing(0f, 1.1f);
-        tile.addView(hintView);
-
         TextView accentBar = new TextView(this);
         accentBar.setBackgroundColor(accent);
         LinearLayout.LayoutParams accentParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(4)
         );
-        accentParams.topMargin = dp(14);
+        accentParams.topMargin = dp(8);
         accentBar.setLayoutParams(accentParams);
         tile.addView(accentBar);
 
@@ -420,11 +429,13 @@ public class MainActivity extends Activity {
 
     private LinearLayout createActionPanel() {
         LinearLayout card = createStandaloneCardContainer();
+        card.addView(createActionButton(getString(R.string.action_refresh_status), false, v -> probeDeviceApprovalState()));
+        card.addView(createActionButton(getString(R.string.action_execute_js_automation), true, v -> showScriptExecuteDialog()));
         card.addView(createActionButton(getString(R.string.action_accessibility_settings), true, v ->
                 startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         ));
         card.addView(createActionButton(getString(R.string.action_start_worker), true, v -> {
-            startService(WorkerForegroundService.createStartIntent(this));
+            startForegroundService(WorkerForegroundService.createStartIntent(this));
             refreshUi();
         }));
         card.addView(createActionButton(getString(R.string.action_stop_worker), false, v -> {
@@ -435,6 +446,97 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(this, SettingsActivity.class))
         ));
         return card;
+    }
+
+    private void probeDeviceApprovalState() {
+        String baseUrl = workerPrefs.getCenterBaseUrl().trim();
+        String deviceId = workerPrefs.getDeviceId().trim();
+        if (baseUrl.isEmpty() || deviceId.isEmpty()) {
+            return;
+        }
+        new Thread(() -> {
+            try {
+                TaskCenterClient client = new TaskCenterClient(workerPrefs);
+                TaskCenterClient.DeviceState deviceState = client.fetchDeviceState();
+                boolean changed = false;
+                if ("APPROVED".equals(deviceState.approvalStatus)) {
+                    workerStatsStore.markServerOnline(getString(R.string.worker_connected_waiting));
+                    if (WorkerStatsStore.RUNTIME_PENDING_APPROVAL.equals(workerStatsStore.getRuntimeStatus())) {
+                        workerStatsStore.markWorkerIdle(getString(R.string.worker_approval_cleared_message));
+                    }
+                    changed = true;
+                } else if ("PENDING".equals(deviceState.approvalStatus)) {
+                    workerStatsStore.markPendingApproval(getString(R.string.worker_pending_approval_message));
+                    changed = true;
+                }
+                if (changed) {
+                    runOnUiThread(this::refreshUi);
+                }
+            } catch (Exception ignored) {
+                // Keep current cached state when the probe cannot reach task-center.
+            }
+        }, "cb-status-probe").start();
+    }
+
+    private void showScriptExecuteDialog() {
+        List<ScriptStore.ScriptEntry> scripts = scriptStore.listScripts();
+        if (scripts.isEmpty()) {
+            Toast.makeText(this, R.string.settings_no_scripts, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String[] fileNames = new String[scripts.size()];
+        for (int i = 0; i < scripts.size(); i++) {
+            fileNames[i] = scripts.get(i).fileName;
+        }
+        final int[] selectedIndex = {0};
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.dialog_execute_js_title)
+                .setSingleChoiceItems(fileNames, 0, (dialog, which) -> selectedIndex[0] = which)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.action_execute_js_automation, (dialog, which) ->
+                        executeSelectedScript(fileNames[selectedIndex[0]]))
+                .show();
+    }
+
+    private void executeSelectedScript(String fileName) {
+        OrbAccessibilityService service = OrbAccessibilityService.getActiveInstance();
+        if (service == null) {
+            Toast.makeText(this, R.string.settings_accessibility_required, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Toast.makeText(this, getString(R.string.settings_script_running, fileName), Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            try {
+                String scriptBody = scriptStore.readScript(fileName);
+                TaskEnvelope task = new TaskEnvelope(
+                        0L,
+                        getString(R.string.manual_test_task_no),
+                        "android",
+                        "",
+                        fileName,
+                        scriptBody,
+                        60000,
+                        new JSONObject(),
+                        "manual"
+                );
+                TaskResultPayload result = new TaskRunner().run(service, task, scriptBody);
+                String summary = "SUCCESS".equalsIgnoreCase(result.status)
+                        ? result.result
+                        : result.errorMessage;
+                String safeSummary = summary != null && !summary.trim().isEmpty() ? summary : result.status;
+                runOnUiThread(() ->
+                        Toast.makeText(this, getString(R.string.settings_script_result, safeSummary), Toast.LENGTH_LONG).show()
+                );
+            } catch (Exception e) {
+                String message = e.getMessage() != null ? e.getMessage() : "script failed";
+                runOnUiThread(() ->
+                        Toast.makeText(this, getString(R.string.settings_script_failed, message), Toast.LENGTH_LONG).show()
+                );
+            }
+        }, "cb-run-js").start();
     }
 
     private Button createActionButton(String label, boolean filled, android.view.View.OnClickListener listener) {
@@ -493,7 +595,7 @@ public class MainActivity extends Activity {
 
     private TextView createSectionTitle(String title, String subtitle) {
         TextView section = new TextView(this);
-        section.setText(title + "\n" + subtitle);
+        section.setText(title);
         section.setTextColor(INK_PRIMARY);
         section.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         section.setTypeface(Typeface.DEFAULT_BOLD);
@@ -604,11 +706,15 @@ public class MainActivity extends Activity {
         runtimeStatusBadgeView.setTextColor(badgeText);
         runtimeStatusBadgeView.setBackground(createRoundedDrawable(badgeFill, badgeFill, 1f));
         bindSignalIcon(runtimeSignalView, runtimeStatusToIcon(headline), badgeText);
-        runtimeStatusView.setText(
-                headline
-                        + "\n\n" + guidance
-                        + "\n\n" + getString(R.string.label_detail) + "\n" + message
-        );
+        if (WorkerStatsStore.RUNTIME_IDLE.equals(runtimeStatus)) {
+            runtimeStatusView.setText(getString(R.string.label_detail) + "\n" + message);
+        } else {
+            runtimeStatusView.setText(
+                    headline
+                            + "\n\n" + guidance
+                            + "\n\n" + getString(R.string.label_detail) + "\n" + message
+            );
+        }
         runtimeStatusView.setTextColor(INK_PRIMARY);
     }
 
@@ -698,12 +804,16 @@ public class MainActivity extends Activity {
         serverStatusBadgeView.setTextColor(badgeText);
         serverStatusBadgeView.setBackground(createRoundedDrawable(badgeFill, badgeFill, 1f));
         bindSignalIcon(serverSignalView, serverStatusToIcon(headline), badgeText);
-        serverStatusView.setText(
-                headline
-                        + "\n\n" + guidance
-                        + "\n\n" + getString(R.string.label_detail) + "\n" + message
-                        + "\n\n" + getString(R.string.label_updated) + "\n" + updatedAt
-        );
+        if (WorkerStatsStore.STATUS_ONLINE.equals(status)) {
+            serverStatusView.setText(getString(R.string.label_updated) + "\n" + updatedAt);
+        } else {
+            serverStatusView.setText(
+                    headline
+                            + "\n\n" + guidance
+                            + "\n\n" + getString(R.string.label_detail) + "\n" + message
+                            + "\n\n" + getString(R.string.label_updated) + "\n" + updatedAt
+            );
+        }
         serverStatusView.setTextColor(INK_PRIMARY);
     }
 

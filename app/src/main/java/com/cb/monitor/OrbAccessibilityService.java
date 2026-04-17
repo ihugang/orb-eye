@@ -40,6 +40,7 @@ import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
 
+import com.cb.monitor.storage.ScriptStore;
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.Text;
 import com.google.mlkit.vision.text.TextRecognition;
@@ -82,6 +83,7 @@ import java.util.regex.Pattern;
 public class OrbAccessibilityService extends AccessibilityService {
     private static final String TAG = "OrbEye";
     private static final int PORT = 7333;
+    private ScriptStore scriptStore;
     private static final int MAX_NOTIFICATIONS = 50;
     private static final String OCR_ENGINE_AUTO = "auto";
     private static final String OCR_ENGINE_MLKIT = "mlkit";
@@ -677,6 +679,10 @@ public class OrbAccessibilityService extends AccessibilityService {
             case "/stop-js":
                 return handleStopJs(method, body, query);
 
+            case "/scripts/upload":
+            case "/script/upload":
+                return handleScriptUpload(method, query, body);
+
             default:
                 return errorJson("Unknown route: " + route, "NOT_FOUND");
         }
@@ -832,6 +838,51 @@ public class OrbAccessibilityService extends AccessibilityService {
             return scriptEngine.execute(script, timeoutMs, executionId);
         } finally {
             finishRunningJsExecution(runningToken);
+        }
+    }
+
+    private String handleScriptUpload(String method, String query, String body) {
+        if (!"POST".equalsIgnoreCase(method) && !"PUT".equalsIgnoreCase(method)) {
+            return errorJson("Use POST or PUT for script upload", "METHOD_NOT_ALLOWED");
+        }
+        try {
+            if (scriptStore == null) {
+                scriptStore = new ScriptStore(this);
+            }
+
+            String fileName = getQueryParam(query, "fileName");
+            if (fileName == null || fileName.trim().isEmpty()) {
+                fileName = getQueryParam(query, "filename");
+            }
+
+            String scriptBody = body != null ? body : "";
+            String trimmed = scriptBody.trim();
+            if (trimmed.startsWith("{")) {
+                try {
+                    JSONObject json = new JSONObject(trimmed);
+                    String bodyFileName = json.optString("fileName", json.optString("filename", ""));
+                    if (!bodyFileName.trim().isEmpty()) {
+                        fileName = bodyFileName;
+                    }
+                    scriptBody = json.optString("script", json.optString("content", ""));
+                } catch (Exception ignored) {
+                    // Fall back to treating the body as raw JavaScript.
+                }
+            }
+
+            if (scriptBody.trim().isEmpty()) {
+                return errorJson("Provide script body in raw text or JSON field 'script'", "INVALID_ARGS");
+            }
+
+            String savedName = scriptStore.saveScript(fileName, scriptBody);
+            JSONObject result = new JSONObject();
+            result.put("ok", true);
+            result.put("fileName", savedName);
+            result.put("overwritten", true);
+            result.put("sizeBytes", scriptBody.getBytes(StandardCharsets.UTF_8).length);
+            return result.toString();
+        } catch (Exception e) {
+            return errorJson("Failed to save script: " + e.getMessage(), "SCRIPT_SAVE_FAILED");
         }
     }
 

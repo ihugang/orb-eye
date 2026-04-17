@@ -12,9 +12,11 @@ public final class WorkerPrefs {
     private static final String KEY_POLL_INTERVAL_MS = "poll_interval_ms";
     private static final String KEY_HEARTBEAT_INTERVAL_MS = "heartbeat_interval_ms";
 
+    private final Context context;
     private final SharedPreferences prefs;
 
     public WorkerPrefs(Context context) {
+        this.context = context.getApplicationContext();
         prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
     }
 
@@ -27,11 +29,17 @@ public final class WorkerPrefs {
     }
 
     public String getDeviceId() {
-        return prefs.getString(KEY_DEVICE_ID, "android-worker-demo");
+        String saved = prefs.getString(KEY_DEVICE_ID, "");
+        if (saved != null && !saved.trim().isEmpty()) {
+            return saved.trim();
+        }
+        String detected = DeviceIdentity.resolve(context);
+        prefs.edit().putString(KEY_DEVICE_ID, detected).apply();
+        return detected;
     }
 
     public void setDeviceId(String value) {
-        prefs.edit().putString(KEY_DEVICE_ID, value).apply();
+        prefs.edit().putString(KEY_DEVICE_ID, value != null ? value.trim() : "").apply();
     }
 
     public String getNodeSecret() {

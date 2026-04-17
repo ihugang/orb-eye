@@ -1,5 +1,6 @@
 package com.cb.monitor.network;
 
+import android.os.Build;
 import android.util.Log;
 
 import com.cb.monitor.model.TaskEnvelope;
@@ -19,14 +20,30 @@ import java.nio.charset.StandardCharsets;
 
 public final class TaskCenterClient {
     private static final String TAG = "CrossBuy.TaskCenter";
+
+    public static final class DeviceState {
+        public final String status;
+        public final String approvalStatus;
+        public final boolean envReady;
+
+        DeviceState(String status, String approvalStatus, boolean envReady) {
+            this.status = status != null ? status : "";
+            this.approvalStatus = approvalStatus != null ? approvalStatus : "";
+            this.envReady = envReady;
+        }
+    }
+
     private final WorkerPrefs prefs;
+    private String registeredDeviceId = "";
+    private String registeredBaseUrl = "";
 
     public TaskCenterClient(WorkerPrefs prefs) {
         this.prefs = prefs;
     }
 
     public void heartbeat(boolean envReady, String reason) throws Exception {
-        String url = prefs.getCenterBaseUrl() + "/api/v1/center/devices/" + encode(prefs.getDeviceId()) + "/heartbeat";
+        ensureRegistered();
+        String url = prefs.getCenterBaseUrl() + "/api/v2/mobile/devices/" + encode(prefs.getDeviceId()) + "/heartbeat";
         JSONObject body = new JSONObject();
         body.put("status", "ONLINE");
         body.put("envReady", envReady);
@@ -38,16 +55,12 @@ public final class TaskCenterClient {
     }
 
     public TaskEnvelope pullNextTask() throws Exception {
-        // This endpoint does not exist in task-center yet; it is the intended
-        // Android-direct replacement for execution-node-driven dispatch.
+        ensureRegistered();
         StringBuilder url = new StringBuilder();
         url.append(prefs.getCenterBaseUrl())
-                .append("/api/v1/center/android-workers/")
+                .append("/api/v2/mobile/devices/")
                 .append(encode(prefs.getDeviceId()))
                 .append("/tasks/next");
-        if (!prefs.getNodeSecret().isEmpty()) {
-            url.append("?nodeSecret=").append(encode(prefs.getNodeSecret()));
-        }
 
         HttpResult result = request("GET", url.toString(), null, "application/json");
         if (result.code == 204 || result.body.trim().isEmpty()) {
@@ -57,6 +70,21 @@ public final class TaskCenterClient {
             throw toApiException("pullNextTask failed", result);
         }
         return TaskEnvelope.fromJson(new JSONObject(result.body));
+    }
+
+    public DeviceState fetchDeviceState() throws Exception {
+        ensureRegistered();
+        String url = prefs.getCenterBaseUrl() + "/api/v2/mobile/devices/" + encode(prefs.getDeviceId()) + "/status";
+        HttpResult result = request("GET", url, null, "application/json");
+        if (result.code >= 400) {
+            throw toApiException("fetchDeviceState failed", result);
+        }
+        JSONObject json = new JSONObject(result.body);
+        return new DeviceState(
+                json.optString("status", ""),
+                json.optString("approvalStatus", ""),
+                json.optBoolean("envReady", false)
+        );
     }
 
     public String downloadScript(TaskEnvelope task) throws Exception {
@@ -102,6 +130,33 @@ public final class TaskCenterClient {
         JSONObject body = payload.toJson();
         body.put("deviceId", prefs.getDeviceId());
         postJson(url, body);
+    }
+
+    private void ensureRegistered() throws Exception {
+        String deviceId = prefs.getDeviceId();
+        String baseUrl = prefs.getCenterBaseUrl();
+        if (deviceId.equals(registeredDeviceId) && baseUrl.equals(registeredBaseUrl)) {
+            return;
+        }
+
+        String url = baseUrl + "/api/v2/mobile/devices/register";
+        JSONObject body = new JSONObject();
+        body.put("deviceId", deviceId);
+        body.put("deviceName", buildDeviceName());
+        body.put("deviceModel", Build.MODEL != null ? Build.MODEL : "");
+        body.put("deviceOsVersion", Build.VERSION.RELEASE != null ? Build.VERSION.RELEASE : "");
+        body.put("deviceSdkVersion", String.valueOf(Build.VERSION.SDK_INT));
+        postJson(url, body);
+
+        registeredDeviceId = deviceId;
+        registeredBaseUrl = baseUrl;
+    }
+
+    private String buildDeviceName() {
+        String manufacturer = Build.MANUFACTURER != null ? Build.MANUFACTURER.trim() : "";
+        String model = Build.MODEL != null ? Build.MODEL.trim() : "";
+        String combined = (manufacturer + " " + model).trim();
+        return combined.isEmpty() ? prefs.getDeviceId() : combined;
     }
 
     private void postJson(String url, JSONObject body) throws Exception {
