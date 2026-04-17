@@ -1,4 +1,4 @@
-package com.orb.eye;
+package com.cb.monitor;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
@@ -7,6 +7,7 @@ import android.content.ClipData;
 import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -75,6 +76,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class OrbAccessibilityService extends AccessibilityService {
     private static final String TAG = "OrbEye";
@@ -87,6 +90,8 @@ public class OrbAccessibilityService extends AccessibilityService {
     private static final int FIND_MAX_DIAGNOSTIC_NODES = 1200;
     private static final int FIND_MAX_DIAGNOSTIC_DEPTH = 24;
     private static final long FIND_MAX_DIAGNOSTIC_MS = 1200L;
+    private static final Pattern CURRENT_FOCUS_PATTERN = Pattern.compile("mCurrentFocus=.*?\\s([A-Za-z0-9._:$-]+)/([A-Za-z0-9._$-]+)");
+    private static final Pattern FOCUSED_APP_PATTERN = Pattern.compile("mFocusedApp=.*?\\s([A-Za-z0-9._:$-]+)/([A-Za-z0-9._$-]+)");
     private static final String FIND_REASON_TEXT_MISMATCH = "text_mismatch";
     private static final String FIND_REASON_DESC_MISMATCH = "desc_mismatch";
     private static final String FIND_REASON_ID_MISMATCH = "id_mismatch";
@@ -106,6 +111,7 @@ public class OrbAccessibilityService extends AccessibilityService {
             0xFFFF9800, // orange
             0xFFF44336  // red
     };
+    private static final AtomicReference<OrbAccessibilityService> ACTIVE_INSTANCE = new AtomicReference<>();
 
     private ServerSocket serverSocket;
     private Thread serverThread;
@@ -166,6 +172,7 @@ public class OrbAccessibilityService extends AccessibilityService {
     @Override
     public void onServiceConnected() {
         super.onServiceConnected();
+        ACTIVE_INSTANCE.set(this);
         Log.i(TAG, "Orb Eye v2.4 service connected");
         startHttpServer();
         mainHandler.post(() -> {
@@ -248,8 +255,116 @@ public class OrbAccessibilityService extends AccessibilityService {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        ACTIVE_INSTANCE.compareAndSet(this, null);
         stopHttpServer();
         shutdownInspector();
+    }
+
+    public static OrbAccessibilityService getActiveInstance() {
+        return ACTIVE_INSTANCE.get();
+    }
+
+    @Override
+    public AccessibilityNodeInfo getRootInActiveWindow() {
+        try {
+            return super.getRootInActiveWindow();
+        } catch (Exception e) {
+            Log.w(TAG, "getRootInActiveWindow failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private boolean isSelfPackage(CharSequence packageName) {
+        return packageName != null && getPackageName().contentEquals(packageName);
+    }
+
+    private AccessibilityNodeInfo getActiveRootNode() {
+        return getRootInActiveWindow();
+    }
+
+    private static class CurrentWindowInfo {
+        final String packageName;
+        final String activityName;
+
+        CurrentWindowInfo(String packageName, String activityName) {
+            this.packageName = packageName != null ? packageName : "";
+            this.activityName = activityName != null ? activityName : "";
+        }
+    }
+
+    private CurrentWindowInfo resolveCurrentWindowInfo(AccessibilityNodeInfo root) {
+        String rootPackage = "";
+        if (root != null && root.getPackageName() != null) {
+            rootPackage = root.getPackageName().toString();
+        }
+        if (rootPackage.isEmpty() || isSelfPackage(rootPackage)) {
+            rootPackage = lastWindowPackage != null ? lastWindowPackage : "";
+        }
+
+        String activity = resolveActivityFromCurrentFocus(rootPackage);
+        if (activity.isEmpty() && rootPackage.equals(lastWindowPackage) && lastWindowClass != null) {
+            activity = lastWindowClass;
+        }
+        return new CurrentWindowInfo(rootPackage, activity);
+    }
+
+    private String resolveActivityFromCurrentFocus(String expectedPackage) {
+        BufferedReader reader = null;
+        Process process = null;
+        try {
+            process = Runtime.getRuntime().exec(new String[]{"sh", "-c", "dumpsys window windows"});
+            reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+            String focusedAppLine = "";
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.contains("mCurrentFocus=")) {
+                    String activityName = parseWindowActivity(line, CURRENT_FOCUS_PATTERN, expectedPackage);
+                    if (!activityName.isEmpty()) return activityName;
+                }
+                if (focusedAppLine.isEmpty() && line.contains("mFocusedApp=")) {
+                    focusedAppLine = line;
+                }
+            }
+            if (!focusedAppLine.isEmpty()) {
+                return parseWindowActivity(focusedAppLine, FOCUSED_APP_PATTERN, expectedPackage);
+            }
+            return "";
+        } catch (Exception e) {
+            Log.w(TAG, "resolveActivityFromCurrentFocus failed: " + e.getMessage());
+            return "";
+        } finally {
+            try {
+                if (reader != null) reader.close();
+            } catch (Exception ignored) {}
+            if (process != null) {
+                try {
+                    process.destroy();
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private String parseWindowActivity(String line, Pattern pattern, String expectedPackage) {
+        if (line == null || line.isEmpty()) return "";
+        Matcher matcher = pattern.matcher(line);
+        if (!matcher.find() || matcher.groupCount() < 2) return "";
+
+        String packageName = matcher.group(1) != null ? matcher.group(1) : "";
+        String activityName = matcher.group(2) != null ? matcher.group(2) : "";
+        if (packageName.contains(":")) return "";
+        if (!expectedPackage.isEmpty() && !expectedPackage.equals(packageName)) return "";
+        if (!packageExists(packageName)) return "";
+        return activityName;
+    }
+
+    private boolean packageExists(String packageName) {
+        if (packageName == null || packageName.isEmpty()) return false;
+        try {
+            getPackageManager().getPackageInfo(packageName, 0);
+            return true;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
     }
 
     // ===== HTTP Server =====
@@ -424,6 +539,13 @@ public class OrbAccessibilityService extends AccessibilityService {
 
             case "/inspect":
                 return getUiInspect(query);
+
+            case "/windows":
+                return getWindowDebugDump();
+
+            case "/windows-diagnose":
+            case "/window-diagnose":
+                return getWindowDiagnosisDump();
 
             case "/inspector/start":
             case "/inspector/open":
@@ -1009,7 +1131,7 @@ public class OrbAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo target = null;
 
         if (!targetId.isEmpty()) {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
+            AccessibilityNodeInfo root = getActiveRootNode();
             if (root != null) {
                 List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(targetId);
                 if (nodes != null && !nodes.isEmpty()) {
@@ -1023,7 +1145,7 @@ public class OrbAccessibilityService extends AccessibilityService {
         }
 
         if (target == null) {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
+            AccessibilityNodeInfo root = getActiveRootNode();
             if (root != null) {
                 target = findFirstEditable(root);
             }
@@ -1090,7 +1212,7 @@ public class OrbAccessibilityService extends AccessibilityService {
 
         while (System.currentTimeMillis() < deadline) {
             attempts++;
-            AccessibilityNodeInfo root = getRootInActiveWindow();
+            AccessibilityNodeInfo root = getActiveRootNode();
             if (root != null) {
                 boolean found = searchTextInTree(root, text, contains);
                 root.recycle();
@@ -1147,16 +1269,20 @@ public class OrbAccessibilityService extends AccessibilityService {
     // ===== App Info =====
 
     private String getAppInfo() throws Exception {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
+        AccessibilityNodeInfo root = getActiveRootNode();
+        CurrentWindowInfo windowInfo = resolveCurrentWindowInfo(root);
 
         JSONObject result = new JSONObject();
         result.put("ok", true);
-        result.put("package", lastWindowPackage);
-        result.put("activity", lastWindowClass);
+        result.put("package", windowInfo.packageName);
+        result.put("activity", windowInfo.activityName);
+        result.put("eventPackage", lastWindowPackage);
+        result.put("eventActivity", lastWindowClass);
 
         if (root != null) {
             result.put("windowPackage", root.getPackageName() != null ? root.getPackageName().toString() : "");
             result.put("windowChildCount", root.getChildCount());
+            result.put("rootClass", root.getClassName() != null ? root.getClassName().toString() : "");
             root.recycle();
         }
 
@@ -1257,20 +1383,309 @@ public class OrbAccessibilityService extends AccessibilityService {
     // ===== UI Tree =====
 
     String getUiTree(String query) throws Exception {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return errorJson("No active window", "NOT_FOUND");
+
+        String filterPkg = null;
+        if (query.contains("package=")) {
+            filterPkg = query.split("package=")[1].split("&")[0];
+        }
+        int maxDepth = clampInt(getQueryInt(query, "maxDepth", 15), 0, 40);
+
+        JSONObject tree = nodeToJson(root, 0, maxDepth, filterPkg);
+        root.recycle();
+        return tree != null ? tree.toString() : errorJson("No matching content", "NOT_FOUND");
+    }
+
+    String getWindowDebugDump() throws Exception {
         return runOnMainThreadBlocking(() -> {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root == null) return errorJson("No active window", "NOT_FOUND");
+            JSONArray windowsJson = new JSONArray();
+            List<AccessibilityWindowInfo> windows = getWindows();
+            if (windows != null) {
+                int index = 0;
+                for (AccessibilityWindowInfo window : windows) {
+                    if (window == null) continue;
+
+                    AccessibilityNodeInfo root = null;
+                    try {
+                        root = window.getRoot();
+                        JSONObject item = new JSONObject();
+                        item.put("index", index++);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                            item.put("type", window.getType());
+                        }
+                        item.put("focused", window.isFocused());
+                        item.put("active", window.isActive());
+                        Rect bounds = new Rect();
+                        window.getBoundsInScreen(bounds);
+                        item.put("windowBounds", bounds.flattenToString());
+
+                        if (root != null) {
+                            Rect rootBounds = new Rect();
+                            root.getBoundsInScreen(rootBounds);
+                            item.put("pkg", root.getPackageName() != null ? root.getPackageName().toString() : "");
+                            item.put("class", root.getClassName() != null ? root.getClassName().toString() : "");
+                            item.put("childCount", root.getChildCount());
+                            item.put("rootBounds", rootBounds.flattenToString());
+                            item.put("rootText", summarizeNodeText(root));
+                        } else {
+                            item.put("pkg", "");
+                            item.put("class", "");
+                            item.put("childCount", 0);
+                            item.put("rootBounds", "");
+                            item.put("rootText", "");
+                        }
+                        windowsJson.put(item);
+                    } finally {
+                        if (root != null) {
+                            root.recycle();
+                        }
+                    }
+                }
+            }
+
+            JSONObject out = new JSONObject();
+            out.put("ok", true);
+            out.put("count", windowsJson.length());
+            out.put("windows", windowsJson);
+            return out.toString();
+        }, 2500L);
+    }
+
+    String getWindowDiagnosisDump() throws Exception {
+        return runOnMainThreadBlocking(() -> {
+            JSONObject out = new JSONObject();
+            JSONArray windowsJson = new JSONArray();
+            JSONArray suspicions = new JSONArray();
+            Rect displayBounds = new Rect(0, 0,
+                    getResources().getDisplayMetrics().widthPixels,
+                    getResources().getDisplayMetrics().heightPixels);
+
+            AccessibilityNodeInfo activeRoot = getRootInActiveWindow();
+            String activeRootText = summarizeNodeText(activeRoot);
+            String activeRootPkg = activeRoot != null && activeRoot.getPackageName() != null
+                    ? activeRoot.getPackageName().toString()
+                    : "";
+            String activeRootClass = activeRoot != null && activeRoot.getClassName() != null
+                    ? activeRoot.getClassName().toString()
+                    : "";
+
+            int samePackageVisibleWindows = 0;
+            int overlayLikeWindows = 0;
+            boolean foundWebViewOverlayCandidate = false;
+            boolean foundFocusedWindowTextDiff = false;
+            String mainPackage = "";
 
             try {
-                String filterPkg = getQueryParam(query, "package");
-                int maxDepth = clampInt(getQueryInt(query, "maxDepth", 15), 0, 40);
+                List<AccessibilityWindowInfo> windows = getWindows();
+                if (windows != null) {
+                    int index = 0;
+                    for (AccessibilityWindowInfo window : windows) {
+                        if (window == null) continue;
 
-                JSONObject tree = nodeToJson(root, 0, maxDepth, filterPkg);
-                return tree != null ? tree.toString() : errorJson("No matching content", "NOT_FOUND");
+                        AccessibilityNodeInfo root = null;
+                        try {
+                            root = window.getRoot();
+                            JSONObject item = new JSONObject();
+                            item.put("index", index++);
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                                item.put("type", window.getType());
+                            }
+                            item.put("focused", window.isFocused());
+                            item.put("active", window.isActive());
+
+                            Rect windowBounds = new Rect();
+                            window.getBoundsInScreen(windowBounds);
+                            item.put("windowBounds", windowBounds.flattenToString());
+                            item.put("windowCoversMostScreen", rectCoversMostOfDisplay(windowBounds, displayBounds));
+
+                            if (root != null) {
+                                Rect rootBounds = new Rect();
+                                root.getBoundsInScreen(rootBounds);
+                                String pkg = root.getPackageName() != null ? root.getPackageName().toString() : "";
+                                String className = root.getClassName() != null ? root.getClassName().toString() : "";
+                                String rootText = summarizeNodeText(root);
+                                int webViewCount = countClassMatches(root, "WebView", 220);
+
+                                item.put("pkg", pkg);
+                                item.put("class", className);
+                                item.put("childCount", root.getChildCount());
+                                item.put("rootBounds", rootBounds.flattenToString());
+                                item.put("rootText", rootText);
+                                item.put("webViewCount", webViewCount);
+                                item.put("containsWebView", webViewCount > 0);
+                                item.put("dialogLikeBounds", !rectCoversMostOfDisplay(windowBounds, displayBounds));
+                                item.put("samePackageAsActiveRoot", !activeRootPkg.isEmpty() && activeRootPkg.equals(pkg));
+                                item.put("textLooksDifferentFromActiveRoot",
+                                        !rootText.isEmpty()
+                                                && !activeRootText.isEmpty()
+                                                && !rootText.equals(activeRootText));
+
+                                if (mainPackage.isEmpty() && !pkg.isEmpty() && !isSelfPackage(pkg)) {
+                                    mainPackage = pkg;
+                                }
+                                if (!pkg.isEmpty() && pkg.equals(mainPackage)) {
+                                    samePackageVisibleWindows++;
+                                }
+                                if (!rectCoversMostOfDisplay(windowBounds, displayBounds)) {
+                                    overlayLikeWindows++;
+                                    if (webViewCount > 0 && !pkg.isEmpty() && pkg.equals(mainPackage)) {
+                                        foundWebViewOverlayCandidate = true;
+                                    }
+                                }
+                                if (window.isFocused()
+                                        && !rootText.isEmpty()
+                                        && !activeRootText.isEmpty()
+                                        && !rootText.equals(activeRootText)) {
+                                    foundFocusedWindowTextDiff = true;
+                                }
+                            } else {
+                                item.put("pkg", "");
+                                item.put("class", "");
+                                item.put("childCount", 0);
+                                item.put("rootBounds", "");
+                                item.put("rootText", "");
+                                item.put("webViewCount", 0);
+                                item.put("containsWebView", false);
+                                item.put("dialogLikeBounds", !rectCoversMostOfDisplay(windowBounds, displayBounds));
+                                item.put("samePackageAsActiveRoot", false);
+                                item.put("textLooksDifferentFromActiveRoot", false);
+                                if (!rectCoversMostOfDisplay(windowBounds, displayBounds)) {
+                                    overlayLikeWindows++;
+                                }
+                            }
+                            windowsJson.put(item);
+                        } finally {
+                            if (root != null) {
+                                root.recycle();
+                            }
+                        }
+                    }
+                }
             } finally {
-                root.recycle();
+                if (activeRoot != null) {
+                    activeRoot.recycle();
+                }
             }
-        }, 2500L);
+
+            String currentFocus = getWindowManagerLine("mCurrentFocus=");
+            String focusedApp = getWindowManagerLine("mFocusedApp=");
+
+            if (samePackageVisibleWindows >= 2) {
+                suspicions.put("same_package_multiple_windows");
+            }
+            if (overlayLikeWindows > 0) {
+                suspicions.put("dialog_like_overlay");
+            }
+            if (foundWebViewOverlayCandidate) {
+                suspicions.put("webview_overlay_candidate");
+            }
+            if (foundFocusedWindowTextDiff) {
+                suspicions.put("focused_window_text_differs_from_active_root");
+            }
+            if (!currentFocus.isEmpty() && containsIgnoreCase(currentFocus, "webview")) {
+                suspicions.put("current_focus_mentions_webview");
+            }
+
+            out.put("ok", true);
+            out.put("activeRootPackage", activeRootPkg);
+            out.put("activeRootClass", activeRootClass);
+            out.put("activeRootText", activeRootText);
+            out.put("currentFocus", currentFocus);
+            out.put("focusedApp", focusedApp);
+            out.put("samePackageWindowCount", samePackageVisibleWindows);
+            out.put("overlayLikeWindowCount", overlayLikeWindows);
+            out.put("suspicions", suspicions);
+            out.put("windows", windowsJson);
+            return out.toString();
+        }, 4000L);
+    }
+
+    private boolean rectCoversMostOfDisplay(Rect rect, Rect displayBounds) {
+        if (rect == null || displayBounds == null) return false;
+        long rectArea = Math.max(1L, (long) rect.width() * (long) rect.height());
+        long displayArea = Math.max(1L, (long) displayBounds.width() * (long) displayBounds.height());
+        return rectArea * 100L >= displayArea * 85L;
+    }
+
+    private int countClassMatches(AccessibilityNodeInfo root, String classNeedle, int maxVisited) {
+        if (root == null || classNeedle == null || classNeedle.isEmpty()) return 0;
+        int count = 0;
+        int visited = 0;
+        Queue<AccessibilityNodeInfo> queue = new ArrayDeque<>();
+        queue.add(root);
+        while (!queue.isEmpty() && visited < maxVisited) {
+            AccessibilityNodeInfo node = queue.poll();
+            visited++;
+            if (node == null) continue;
+            String className = node.getClassName() != null ? node.getClassName().toString() : "";
+            if (containsIgnoreCase(className, classNeedle)) {
+                count++;
+            }
+            for (int i = 0; i < node.getChildCount(); i++) {
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child != null) {
+                    queue.add(child);
+                }
+            }
+        }
+        return count;
+    }
+
+    private String getWindowManagerLine(String contains) {
+        BufferedReader reader = null;
+        Process process = null;
+        try {
+            process = Runtime.getRuntime().exec(new String[]{"sh", "-c", "dumpsys window windows"});
+            reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.contains(contains)) {
+                    return line.trim();
+                }
+            }
+            return "";
+        } catch (Exception e) {
+            Log.w(TAG, "getWindowManagerLine failed: " + e.getMessage());
+            return "";
+        } finally {
+            try {
+                if (reader != null) reader.close();
+            } catch (Exception ignored) {}
+            if (process != null) {
+                try {
+                    process.destroy();
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private String summarizeNodeText(AccessibilityNodeInfo root) {
+        if (root == null) return "";
+        StringBuilder sb = new StringBuilder();
+        Queue<AccessibilityNodeInfo> queue = new ArrayDeque<>();
+        queue.add(root);
+        int visited = 0;
+        while (!queue.isEmpty() && visited < 40 && sb.length() < 160) {
+            AccessibilityNodeInfo node = queue.poll();
+            visited++;
+            if (node == null) continue;
+
+            String text = sanitizeUiText(node.getText());
+            String desc = sanitizeUiText(node.getContentDescription());
+            String value = !text.isEmpty() ? text : desc;
+            if (!value.isEmpty()) {
+                if (sb.length() > 0) sb.append(" | ");
+                sb.append(value);
+            }
+
+            for (int i = 0; i < node.getChildCount(); i++) {
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child != null) queue.add(child);
+            }
+        }
+        String out = sb.toString();
+        return out.length() > 160 ? out.substring(0, 160) : out;
     }
 
     private JSONObject nodeToJson(AccessibilityNodeInfo node, int depth, int maxDepth, String filterPkg) throws Exception {
@@ -1334,7 +1749,7 @@ public class OrbAccessibilityService extends AccessibilityService {
             boolean htmlFormat = "html".equalsIgnoreCase(format);
             String mode = getQueryParam(query, "mode");
             boolean layoutMode = "layout".equalsIgnoreCase(mode);
-            AccessibilityNodeInfo root = getRootInActiveWindow();
+            AccessibilityNodeInfo root = getActiveRootNode();
             if (root == null) {
                 if (htmlFormat) {
                     return renderInspectHtmlError("No active window");
@@ -3116,7 +3531,7 @@ public class OrbAccessibilityService extends AccessibilityService {
             expandedState.put(node.path, node.expanded);
         }
 
-        AccessibilityNodeInfo root = getRootInActiveWindow();
+        AccessibilityNodeInfo root = getActiveRootNode();
         if (root == null) {
             inspectorLastError = "No active window";
             inspectorRootNode = null;
@@ -3700,8 +4115,15 @@ public class OrbAccessibilityService extends AccessibilityService {
      */
     private String getScreenSummary(String query) throws Exception {
         return runOnMainThreadBlocking(() -> {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root == null) return errorJson("No active window", "NOT_FOUND");
+            AccessibilityNodeInfo root = getActiveRootNode();
+            if (root == null) {
+                JSONObject result = new JSONObject();
+                result.put("ok", false);
+                result.put("code", "NOT_FOUND");
+                result.put("error", "No active window");
+                result.put("rootSource", "none");
+                return result.toString();
+            }
 
             try {
                 String filterPkg = getQueryParam(query, "package");
@@ -3730,17 +4152,22 @@ public class OrbAccessibilityService extends AccessibilityService {
                     }
                 }
                 if (packageName.isEmpty()) {
-                    packageName = lastWindowPackage != null ? lastWindowPackage : "";
+                    CurrentWindowInfo windowInfo = resolveCurrentWindowInfo(root);
+                    packageName = windowInfo.packageName;
                 }
 
-                String activity = (lastWindowClass != null && !lastWindowClass.isEmpty())
-                        ? lastWindowClass
-                        : (!nodes.isEmpty() ? nodes.get(0).className : "");
-
+                CurrentWindowInfo windowInfo = resolveCurrentWindowInfo(root);
+                if (packageName.isEmpty()) {
+                    packageName = windowInfo.packageName;
+                }
                 JSONObject result = new JSONObject();
                 result.put("ok", true);
+                result.put("rootSource", "current");
                 result.put("package", packageName);
-                result.put("activity", activity);
+                result.put("activity", windowInfo.activityName);
+                result.put("eventPackage", lastWindowPackage);
+                result.put("eventActivity", lastWindowClass);
+                result.put("rootClass", root.getClassName() != null ? root.getClassName().toString() : "");
                 result.put("title", detectScreenTitle(nodes));
                 result.put("interactive_count", interactiveCount);
                 result.put("text_count", textCount);
@@ -4092,37 +4519,35 @@ public class OrbAccessibilityService extends AccessibilityService {
      *   scrollable=true   — only elements inside a scrollable container
      *   editable=true     — only editable elements
      *   package=xxx       — filter by package name
+     *   full=true         — include structural nodes without text/desc
      * Each element now includes centerX/centerY for direct use with /tap.
      */
     private String getScreenElements(String query) throws Exception {
-        return runOnMainThreadBlocking(() -> {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root == null) return errorJson("No active window", "NOT_FOUND");
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return errorJson("No active window", "NOT_FOUND");
 
-            try {
-                boolean onlyScrollable = query.contains("scrollable=true");
-                boolean onlyEditable = query.contains("editable=true");
-                String filterPkg = null;
-                if (query.contains("package=")) {
-                    filterPkg = query.split("package=")[1].split("&")[0];
-                }
+        boolean onlyScrollable = query.contains("scrollable=true");
+        boolean onlyEditable = query.contains("editable=true");
+        boolean includeAll = query.contains("full=true") || query.contains("tree=true");
+        String filterPkg = null;
+        if (query.contains("package=")) {
+            filterPkg = query.split("package=")[1].split("&")[0];
+        }
 
-                JSONArray elements = new JSONArray();
-                collectScreenElements(root, elements, onlyScrollable, onlyEditable, filterPkg, false);
+        JSONArray elements = new JSONArray();
+        collectScreenElements(root, elements, onlyScrollable, onlyEditable, filterPkg, false, includeAll, 0, -1, "0");
 
-                JSONObject result = new JSONObject();
-                result.put("ok", true);
-                result.put("elements", elements);
-                return result.toString();
-            } finally {
-                root.recycle();
-            }
-        }, 2500L);
+        root.recycle();
+        JSONObject result = new JSONObject();
+        result.put("ok", true);
+        result.put("full", includeAll);
+        result.put("elements", elements);
+        return result.toString();
     }
 
     String getScreenElementsForScript() throws Exception {
         return runOnMainThreadBlocking(() -> {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
+            AccessibilityNodeInfo root = getActiveRootNode();
             if (root == null) return "[]";
 
             try {
@@ -4168,7 +4593,7 @@ public class OrbAccessibilityService extends AccessibilityService {
 
     String findTextForScript(String text) throws Exception {
         return runOnMainThreadBlocking(() -> {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
+            AccessibilityNodeInfo root = getActiveRootNode();
             if (root == null) return null;
             try {
                 List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(text);
@@ -4193,7 +4618,7 @@ public class OrbAccessibilityService extends AccessibilityService {
 
     boolean hasTextForScript(String text) throws Exception {
         Boolean result = runOnMainThreadBlocking(() -> {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
+            AccessibilityNodeInfo root = getActiveRootNode();
             if (root == null) return Boolean.FALSE;
             try {
                 List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(text);
@@ -4207,7 +4632,7 @@ public class OrbAccessibilityService extends AccessibilityService {
 
     String getVisibleTextForScript() throws Exception {
         return runOnMainThreadBlocking(() -> {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
+            AccessibilityNodeInfo root = getActiveRootNode();
             if (root == null) return "";
             try {
                 StringBuilder sb = new StringBuilder();
@@ -4258,7 +4683,7 @@ public class OrbAccessibilityService extends AccessibilityService {
      */
     private String handleEnrich(String query, JSONObject body) throws Exception {
         long startedAt = System.currentTimeMillis();
-        AccessibilityNodeInfo root = getRootInActiveWindow();
+        AccessibilityNodeInfo root = getActiveRootNode();
         if (root == null) return errorJson("No active window", "NOT_FOUND");
 
         Bitmap source = null;
@@ -4507,10 +4932,13 @@ public class OrbAccessibilityService extends AccessibilityService {
     /**
      * Recursively collect screen elements. When onlyScrollable=true, only yield
      * elements that are descendants of a scrollable container.
+     * When includeAll=true, include structural nodes even if they have no
+     * text/desc so callers can navigate the full accessibility tree.
      */
     private void collectScreenElements(AccessibilityNodeInfo node, JSONArray out,
             boolean onlyScrollable, boolean onlyEditable, String filterPkg,
-            boolean insideScrollable) throws Exception {
+            boolean insideScrollable, boolean includeAll,
+            int depth, int indexInParent, String path) throws Exception {
 
         if (node == null) return;
 
@@ -4520,7 +4948,8 @@ public class OrbAccessibilityService extends AccessibilityService {
             for (int i = 0; i < node.getChildCount(); i++) {
                 AccessibilityNodeInfo child = node.getChild(i);
                 if (child != null) {
-                    collectScreenElements(child, out, onlyScrollable, onlyEditable, filterPkg, insideScrollable);
+                    collectScreenElements(child, out, onlyScrollable, onlyEditable, filterPkg, insideScrollable, includeAll,
+                            depth + 1, i, path + "." + i);
                     child.recycle();
                 }
             }
@@ -4537,14 +4966,24 @@ public class OrbAccessibilityService extends AccessibilityService {
         boolean passScrollable = !onlyScrollable || nowInsideScrollable;
         boolean passEditable = !onlyEditable || isEditable;
 
-        if (passScrollable && passEditable && (!text.isEmpty() || !desc.isEmpty())) {
+        if (passScrollable && passEditable && (includeAll || !text.isEmpty() || !desc.isEmpty())) {
             JSONObject item = new JSONObject();
             if (!text.isEmpty()) item.put("text", text);
             if (!desc.isEmpty()) item.put("desc", desc);
             item.put("id", node.getViewIdResourceName() != null ? node.getViewIdResourceName() : "");
+            item.put("package", pkg);
+            item.put("class", node.getClassName() != null ? node.getClassName().toString() : "");
             item.put("clickable", node.isClickable());
+            item.put("enabled", node.isEnabled());
+            item.put("visible", node.isVisibleToUser());
             item.put("editable", isEditable);
             item.put("scrollable", node.isScrollable());
+            item.put("depth", depth);
+            item.put("indexInParent", indexInParent);
+            item.put("childCount", node.getChildCount());
+            item.put("path", path);
+            int lastDot = path.lastIndexOf('.');
+            item.put("parentPath", lastDot >= 0 ? path.substring(0, lastDot) : "");
 
             Rect bounds = new Rect();
             node.getBoundsInScreen(bounds);
@@ -4558,7 +4997,8 @@ public class OrbAccessibilityService extends AccessibilityService {
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child != null) {
-                collectScreenElements(child, out, onlyScrollable, onlyEditable, filterPkg, nowInsideScrollable);
+                collectScreenElements(child, out, onlyScrollable, onlyEditable, filterPkg, nowInsideScrollable, includeAll,
+                        depth + 1, i, path + "." + i);
                 child.recycle();
             }
         }
@@ -4567,18 +5007,13 @@ public class OrbAccessibilityService extends AccessibilityService {
     // ===== Focused Element =====
 
     private String getFocusedElement() throws Exception {
-        return runOnMainThreadBlocking(() -> {
-            AccessibilityNodeInfo focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-            if (focused == null) focused = findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY);
-            if (focused == null) return errorJson("No focused element", "NOT_FOUND");
+        AccessibilityNodeInfo focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        if (focused == null) focused = findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY);
+        if (focused == null) return errorJson("No focused element", "NOT_FOUND");
 
-            try {
-                JSONObject obj = nodeToJson(focused, 0, 0, null);
-                return obj != null ? obj.toString() : errorJson("Node unavailable", "NOT_FOUND");
-            } finally {
-                focused.recycle();
-            }
-        }, 2500L);
+        JSONObject obj = nodeToJson(focused, 0, 0, null);
+        focused.recycle();
+        return obj != null ? obj.toString() : errorJson("Node unavailable", "NOT_FOUND");
     }
 
     // ===== Tap by coordinates =====
@@ -4610,7 +5045,7 @@ public class OrbAccessibilityService extends AccessibilityService {
         String targetId = body.optString("id", "");
         String targetBounds = body.optString("bounds", "");
 
-        AccessibilityNodeInfo root = getRootInActiveWindow();
+        AccessibilityNodeInfo root = getActiveRootNode();
         if (root == null) return errorJson("No active window", "NOT_FOUND");
 
         AccessibilityNodeInfo target = null;
@@ -4722,7 +5157,7 @@ public class OrbAccessibilityService extends AccessibilityService {
 
         AccessibilityNodeInfo focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
         if (focused == null) {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
+            AccessibilityNodeInfo root = getActiveRootNode();
             if (root != null) focused = findFirstEditable(root);
         }
 
@@ -4793,7 +5228,7 @@ public class OrbAccessibilityService extends AccessibilityService {
         String targetText = body.optString("target", "");
         int count = Math.max(1, body.optInt("count", 1));
 
-        AccessibilityNodeInfo root = getRootInActiveWindow();
+        AccessibilityNodeInfo root = getActiveRootNode();
         if (root == null) return errorJson("No active window", "NOT_FOUND");
 
         AccessibilityNodeInfo scrollable;
@@ -4909,7 +5344,7 @@ public class OrbAccessibilityService extends AccessibilityService {
             query = desc;
         }
 
-        AccessibilityNodeInfo root = getRootInActiveWindow();
+        AccessibilityNodeInfo root = getActiveRootNode();
         if (root == null) {
             return buildFindFailure(
                     queryType, query, fuzzy, onlyClickable, index,

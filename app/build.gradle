@@ -18,7 +18,7 @@ def parseIntSafe = { String raw, int fallback ->
     }
 }
 
-def buildNumberFile = new File(System.getProperty("user.home"), ".orb-eye-build-number")
+def buildNumberFile = new File(System.getProperty("user.home"), ".cb-monitor-build-number")
 def currentBuildNumber = 0
 if (buildNumberFile.exists()) {
     currentBuildNumber = parseIntSafe(buildNumberFile.text, 0)
@@ -41,11 +41,11 @@ if (currentBuildNumber < 1) {
 }
 
 android {
-    namespace 'com.orb.eye'
+    namespace 'com.cb.monitor'
     compileSdk 35
 
     defaultConfig {
-        applicationId "com.orb.eye"
+        applicationId "com.cb.monitor"
         minSdk 26
         targetSdk 35
         versionCode currentBuildNumber
@@ -63,6 +63,14 @@ android {
 
     buildFeatures {
         buildConfig true
+    }
+
+    sourceSets {
+        main {
+            // Paddle OCR and its bundled JNI libs were removed. Keep this empty
+            // so only dependency-provided native libs, such as ML Kit, are packed.
+            jniLibs.srcDirs = []
+        }
     }
 
     compileOptions {

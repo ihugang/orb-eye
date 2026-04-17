@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APK_PATH="$ROOT_DIR/app/build/outputs/apk/debug/app-debug.apk"
-PACKAGE_NAME="com.orb.eye"
+PACKAGE_NAME="com.cb.monitor"
 DEVICE_SERIAL="${1:-${ANDROID_SERIAL:-}}"
 
 resolve_device_serial() {
@@ -79,7 +79,7 @@ if [[ ! -f "$APK_PATH" ]]; then
 fi
 
 echo "==> Verifying 16KB page alignment"
-"$ZIPALIGN_BIN" -c -P 16 -v 4 "$APK_PATH" >/tmp/orb-eye-zipalign.log
+"$ZIPALIGN_BIN" -c -P 16 -v 4 "$APK_PATH" >/tmp/cb-monitor-zipalign.log
 echo "16KB alignment OK"
 
 echo "==> Installing APK"
