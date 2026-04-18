@@ -269,7 +269,6 @@ public class OrbAccessibilityService extends AccessibilityService {
     public static OrbAccessibilityService getActiveInstance() {
         return ACTIVE_INSTANCE.get();
     }
-
     @Override
     public AccessibilityNodeInfo getRootInActiveWindow() {
         try {

@@ -442,6 +442,26 @@ public class MainActivity extends Activity {
             stopService(WorkerForegroundService.createStartIntent(this));
             refreshUi();
         }));
+        card.addView(createActionButton("Stop All JS", false, v -> {
+            OrbAccessibilityService service = OrbAccessibilityService.getActiveInstance();
+            if (service == null) {
+                Toast.makeText(this, R.string.settings_accessibility_required, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            new Thread(() -> {
+                try {
+                    service.stopAllRunningJsExecutions("Stopped from main panel");
+                    runOnUiThread(() ->
+                            Toast.makeText(this, "Stopped all running JS tasks", Toast.LENGTH_SHORT).show()
+                    );
+                } catch (Exception e) {
+                    String message = e.getMessage() != null ? e.getMessage() : "stop failed";
+                    runOnUiThread(() ->
+                            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                    );
+                }
+            }, "cb-stop-all-js").start();
+        }));
         card.addView(createActionButton(getString(R.string.action_open_rpa_settings), false, v ->
                 startActivity(new Intent(this, SettingsActivity.class))
         ));
