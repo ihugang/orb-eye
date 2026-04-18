@@ -23,9 +23,19 @@ public final class TaskRunner {
         }
 
         long start = System.currentTimeMillis();
-        OrbScriptEngine engine = new OrbScriptEngine(service);
+        // Reuse the service-level engine so execution ids, worker registry,
+        // and /exec/stop-all control share state with HTTP-submitted scripts.
+        OrbScriptEngine engine = service.getOrCreateScriptEngine();
         String wrappedScript = buildWrappedScript(task, scriptBody);
-        String rawResult = engine.execute(wrappedScript, task.timeoutMs);
+        String displayName = task.scriptFilename != null && !task.scriptFilename.isEmpty()
+                ? task.scriptFilename : task.taskNo;
+        long token = service.beginJsExecution(displayName);
+        String rawResult;
+        try {
+            rawResult = engine.execute(wrappedScript, task.timeoutMs);
+        } finally {
+            service.endJsExecution(token);
+        }
         long durationMs = System.currentTimeMillis() - start;
 
         JSONObject parsed = new JSONObject(rawResult);
@@ -43,11 +53,13 @@ public final class TaskRunner {
             device.put("sdk", Build.VERSION.SDK_INT);
             device.put("appVersion", BuildConfig.VERSION_NAME);
 
+            // `$`-prefixed to mark "injected by runtime" and avoid colliding with
+            // PREAMBLE API functions (e.g. global `input(text)` for typing).
             StringBuilder script = new StringBuilder();
-            script.append("const task = ").append(toJson(taskJson(task))).append(";\n");
-            script.append("const input = ").append(toJson(task.inputData)).append(";\n");
-            script.append("const device = ").append(toJson(device)).append(";\n");
-            script.append("const runtime = { app: 'crossbuy-monitor', jsEngine: 'rhino' };\n");
+            script.append("var $task = ").append(toJson(taskJson(task))).append(";\n");
+            script.append("var $input = ").append(toJson(task.inputData)).append(";\n");
+            script.append("var $device = ").append(toJson(device)).append(";\n");
+            script.append("var $runtime = { app: 'crossbuy-monitor', jsEngine: 'rhino' };\n");
             script.append(scriptBody).append("\n");
             return script.toString();
         } catch (Exception e) {

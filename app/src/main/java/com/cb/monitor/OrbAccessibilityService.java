@@ -40,6 +40,7 @@ import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
 
+import com.cb.monitor.logs.LogViewerHtml;
 import com.cb.monitor.storage.ScriptStore;
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.Text;
@@ -119,6 +120,9 @@ public class OrbAccessibilityService extends AccessibilityService {
     private Thread serverThread;
     private ExecutorService fastPool; // lightweight: ping, screen, tap, click, clipboard, etc.
     private ExecutorService ocrPool;  // heavyweight: /ocr, /ocr-screen (CPU-bound, slow)
+    // SSE pool: /log-stream keeps a socket open for minutes/hours.
+    // Must be isolated from fastPool or N open browsers would exhaust the 8-thread limit.
+    private ExecutorService logStreamPool;
 
     // ===== Notification buffer =====
     private final CopyOnWriteArrayList<JSONObject> notificationBuffer = new CopyOnWriteArrayList<>();
@@ -382,6 +386,8 @@ public class OrbAccessibilityService extends AccessibilityService {
         // OCR pool: CPU-bound screenshot+recognition, can take 5-30 s each.
         // Kept small (2) to limit memory pressure; fast pool never waits on it.
         ocrPool = Executors.newFixedThreadPool(2);
+        // Log stream pool: grows on demand, one thread per open browser.
+        logStreamPool = Executors.newCachedThreadPool();
         serverThread = new Thread(() -> {
             try {
                 serverSocket = new ServerSocket(PORT);
@@ -411,6 +417,10 @@ public class OrbAccessibilityService extends AccessibilityService {
             if (isOcrRoute(route)) {
                 // Hand off to OCR pool; this fast-pool thread is freed immediately.
                 ocrPool.execute(() -> handleRequestFrom(client, reader, requestLine));
+            } else if ("/log-stream".equals(route)) {
+                // SSE is long-lived; use dedicated pool so one browser per thread
+                // cannot starve the fast pool of capacity for business endpoints.
+                logStreamPool.execute(() -> handleLogStream(client, reader, requestLine));
             } else {
                 handleRequestFrom(client, reader, requestLine);
             }
@@ -424,6 +434,7 @@ public class OrbAccessibilityService extends AccessibilityService {
         try {
             if (fastPool != null) fastPool.shutdownNow();
             if (ocrPool != null) ocrPool.shutdownNow();
+            if (logStreamPool != null) logStreamPool.shutdownNow();
             if (serverSocket != null) serverSocket.close();
             if (serverThread != null) serverThread.interrupt();
         } catch (Exception e) {
@@ -475,6 +486,8 @@ public class OrbAccessibilityService extends AccessibilityService {
 
             String contentType = "application/json; charset=utf-8";
             if ("/inspect".equals(route) && "html".equalsIgnoreCase(getQueryParam(query, "format"))) {
+                contentType = "text/html; charset=utf-8";
+            } else if ("/logs".equals(route)) {
                 contentType = "text/html; charset=utf-8";
             }
 
@@ -683,6 +696,9 @@ public class OrbAccessibilityService extends AccessibilityService {
             case "/script/upload":
                 return handleScriptUpload(method, query, body);
 
+            case "/logs":
+                return LogViewerHtml.page();
+
             default:
                 return errorJson("Unknown route: " + route, "NOT_FOUND");
         }
@@ -745,7 +761,26 @@ public class OrbAccessibilityService extends AccessibilityService {
         return obj;
     }
 
-    private OrbScriptEngine scriptEngine;
+    private volatile OrbScriptEngine scriptEngine;
+
+    /**
+     * Return the shared script engine, creating it on first access.
+     * All execution paths (/exec, TaskRunner, manual file-run) must go through
+     * this so they share execution-id numbering, worker registry, and stop flags.
+     */
+    public OrbScriptEngine getOrCreateScriptEngine() {
+        OrbScriptEngine local = scriptEngine;
+        if (local == null) {
+            synchronized (this) {
+                local = scriptEngine;
+                if (local == null) {
+                    local = new OrbScriptEngine(this);
+                    scriptEngine = local;
+                }
+            }
+        }
+        return local;
+    }
 
     private String handleStopJs(String method, String body, String query) {
         try {
@@ -829,13 +864,11 @@ public class OrbAccessibilityService extends AccessibilityService {
             return errorJson("Provide 'script' field with JavaScript code", "INVALID_ARGS");
         }
         int timeoutMs = body.optInt("timeout", 60000);
-        if (scriptEngine == null) {
-            scriptEngine = new OrbScriptEngine(this);
-        }
+        OrbScriptEngine engine = getOrCreateScriptEngine();
         Long executionId = parseLongSafely(body.opt("executionId"));
         long runningToken = registerRunningJsExecution(body, script);
         try {
-            return scriptEngine.execute(script, timeoutMs, executionId);
+            return engine.execute(script, timeoutMs, executionId);
         } finally {
             finishRunningJsExecution(runningToken);
         }
@@ -904,9 +937,7 @@ public class OrbAccessibilityService extends AccessibilityService {
                 return;
             }
             int timeoutMs = body.optInt("timeout", 60000);
-            if (scriptEngine == null) {
-                scriptEngine = new OrbScriptEngine(this);
-            }
+            OrbScriptEngine engine = getOrCreateScriptEngine();
             Long executionId = parseLongSafely(body.opt("executionId"));
             runningToken = registerRunningJsExecution(body, script);
 
@@ -922,7 +953,7 @@ public class OrbAccessibilityService extends AccessibilityService {
 
             // Wrap OutputStream with chunked encoding
             ChunkedOutputStream chunked = new ChunkedOutputStream(out);
-            scriptEngine.executeStreaming(script, timeoutMs, executionId, chunked);
+            engine.executeStreaming(script, timeoutMs, executionId, chunked);
 
             // Send final zero-length chunk to signal end
             chunked.finish();
@@ -936,6 +967,107 @@ public class OrbAccessibilityService extends AccessibilityService {
                 finishRunningJsExecution(runningToken);
             }
         }
+    }
+
+    /**
+     * SSE endpoint for live JS execution logs.
+     * Protocol: {@code data: <json>\n\n}. Honors Last-Event-ID header to replay
+     * buffered entries after a reconnect.
+     */
+    private void handleLogStream(Socket client, BufferedReader reader, String requestLine) {
+        com.cb.monitor.logs.LogBus.Subscriber sub = null;
+        try {
+            long lastEventId = 0L;
+            String line;
+            while ((line = reader.readLine()) != null && !line.isEmpty()) {
+                if (line.toLowerCase().startsWith("last-event-id:")) {
+                    try {
+                        lastEventId = Long.parseLong(line.substring(14).trim());
+                    } catch (Exception ignored) {}
+                }
+            }
+
+            final OutputStream out = client.getOutputStream();
+            String hdr = "HTTP/1.1 200 OK\r\n"
+                    + "Content-Type: text/event-stream; charset=utf-8\r\n"
+                    + "Cache-Control: no-cache, no-transform\r\n"
+                    + "Connection: close\r\n"
+                    + "Access-Control-Allow-Origin: *\r\n"
+                    + "X-Accel-Buffering: no\r\n"
+                    + "\r\n";
+            out.write(hdr.getBytes("UTF-8"));
+            out.flush();
+
+            // Replay buffered entries the client hasn't seen yet (reconnect support).
+            for (com.cb.monitor.logs.LogBus.Entry e : com.cb.monitor.logs.LogBus.get().snapshotSince(lastEventId)) {
+                writeSseEntry(out, e);
+            }
+
+            final Object writeLock = new Object();
+            final java.util.concurrent.atomic.AtomicBoolean alive = new java.util.concurrent.atomic.AtomicBoolean(true);
+            sub = entry -> {
+                if (!alive.get()) return;
+                synchronized (writeLock) {
+                    try {
+                        writeSseEntry(out, entry);
+                    } catch (Exception ex) {
+                        alive.set(false);
+                    }
+                }
+            };
+            com.cb.monitor.logs.LogBus.get().subscribe(sub);
+
+            // Keepalive ping every 20s; also detects dead peers via IOException.
+            while (alive.get() && !Thread.currentThread().isInterrupted()) {
+                Thread.sleep(20000L);
+                synchronized (writeLock) {
+                    try {
+                        out.write(": keepalive\n\n".getBytes("UTF-8"));
+                        out.flush();
+                    } catch (Exception ex) {
+                        alive.set(false);
+                    }
+                }
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            Log.e(TAG, "log stream error: " + e.getMessage());
+        } finally {
+            if (sub != null) {
+                com.cb.monitor.logs.LogBus.get().unsubscribe(sub);
+            }
+            try { client.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private static void writeSseEntry(OutputStream out, com.cb.monitor.logs.LogBus.Entry entry) throws Exception {
+        StringBuilder sb = new StringBuilder(128);
+        sb.append("id: ").append(entry.id).append('\n');
+        sb.append("data: ").append(entry.toJson()).append("\n\n");
+        out.write(sb.toString().getBytes("UTF-8"));
+        out.flush();
+    }
+
+    /**
+     * Public entry for non-HTTP callers (TaskRunner, manual file-run) so their
+     * scripts show up in the control panel and are counted by stop-all.
+     * Pair every successful call with {@link #endJsExecution(long)} in a finally.
+     */
+    public long beginJsExecution(String displayName) {
+        String name = (displayName == null || displayName.trim().isEmpty())
+                ? "anonymous.js" : displayName.trim();
+        long token;
+        synchronized (jsExecutionLock) {
+            token = runningJsTokenSeq.getAndIncrement();
+            runningJsExecutions.put(token, name);
+        }
+        mainHandler.post(this::updateInspectorControlButtonsOnMain);
+        return token;
+    }
+
+    public void endJsExecution(long token) {
+        finishRunningJsExecution(token);
     }
 
     private long registerRunningJsExecution(JSONObject body, String script) {

@@ -12,6 +12,8 @@ import android.os.Looper;
 import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
 
+import com.cb.monitor.logs.LogBus;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.mozilla.javascript.Context;
@@ -124,6 +126,8 @@ public class OrbScriptEngine {
             Context cx = super.makeContext();
             // Rhino on Android: must use interpreted mode (no bytecode gen).
             cx.setOptimizationLevel(-1);
+            // Enable ES6 so wrapped scripts and user scripts can use const/let/arrow.
+            cx.setLanguageVersion(Context.VERSION_ES6);
             // Check interrupt status regularly so force-stop can break tight JS loops.
             cx.setInstructionObserverThreshold(10_000);
             return cx;
@@ -560,6 +564,26 @@ public class OrbScriptEngine {
         "function waitForText(t, ms) { return _orb.waitForText(t, ms || 10000); }\n" +
         "function exit(v) { if (v === undefined || v === null) _orb.exit(); else _orb.exit(String(v)); }\n" +
         "function log() { _orb.log(Array.prototype.slice.call(arguments).join(' ')); }\n" +
+        "function __orbConsoleWrite(level, args) {\n" +
+        "  var parts = [];\n" +
+        "  for (var i = 0; i < args.length; i++) {\n" +
+        "    var value = args[i];\n" +
+        "    if (value === undefined) parts.push('undefined');\n" +
+        "    else if (value === null) parts.push('null');\n" +
+        "    else if (typeof value === 'object') {\n" +
+        "      try { parts.push(JSON.stringify(value)); }\n" +
+        "      catch (e) { parts.push(String(value)); }\n" +
+        "    } else parts.push(String(value));\n" +
+        "  }\n" +
+        "  _orb.log((level ? '[' + level + '] ' : '') + parts.join(' '));\n" +
+        "}\n" +
+        "var console = {\n" +
+        "  log: function() { __orbConsoleWrite('', arguments); },\n" +
+        "  info: function() { __orbConsoleWrite('info', arguments); },\n" +
+        "  warn: function() { __orbConsoleWrite('warn', arguments); },\n" +
+        "  error: function() { __orbConsoleWrite('error', arguments); },\n" +
+        "  debug: function() { __orbConsoleWrite('debug', arguments); }\n" +
+        "};\n" +
         // waitUntil needs special handling since it takes a JS function
         "function waitUntil(fn, ms, interval) {\n" +
         "  ms = ms || 10000; interval = interval || 500;\n" +
@@ -635,6 +659,7 @@ public class OrbScriptEngine {
         }
 
         public String findText(String text) {
+            engineTrace("findText", abbreviateForTrace(text));
             try {
                 return svc.findTextForScript(text);
             } catch (Exception e) {
@@ -643,6 +668,7 @@ public class OrbScriptEngine {
         }
 
         public boolean hasText(String text) {
+            engineTrace("hasText", abbreviateForTrace(text));
             try {
                 return svc.hasTextForScript(text);
             } catch (Exception e) {
@@ -669,6 +695,7 @@ public class OrbScriptEngine {
         // ── Interaction ─────────────────────────────────────────────────
 
         public boolean openPackage(String packageName) {
+            engineTrace("openPackage", packageName);
             try {
                 String pkg = packageName != null ? packageName.trim() : "";
                 if (pkg.isEmpty()) return false;
@@ -684,6 +711,7 @@ public class OrbScriptEngine {
         }
 
         public boolean openActivity(String packageName, String activityName) {
+            engineTrace("openActivity", packageName + "/" + activityName);
             try {
                 String pkg = packageName != null ? packageName.trim() : "";
                 String cls = activityName != null ? activityName.trim() : "";
@@ -705,6 +733,7 @@ public class OrbScriptEngine {
          * If the URL contains "taobao.com" or "tmall.com", it targets com.taobao.taobao directly.
          */
         public boolean openUrl(String url) {
+            engineTrace("openUrl", abbreviateForTrace(url));
             try {
                 String u = url != null ? url.trim() : "";
                 if (u.isEmpty()) return false;
@@ -728,6 +757,7 @@ public class OrbScriptEngine {
          * Returns the command's stdout, or empty string on error.
          */
         public String shell(String cmd) {
+            engineTrace("shell", abbreviateForTrace(cmd));
             Process proc = null;
             try {
                 throwIfStopRequested();
@@ -760,6 +790,7 @@ public class OrbScriptEngine {
         }
 
         public boolean tap(int x, int y) {
+            engineTrace("tap", x + "," + y);
             try {
                 throwIfStopRequested();
                 Path path = new Path();
@@ -792,6 +823,7 @@ public class OrbScriptEngine {
          * This matches the explicit shell-tap route used by some automation tools.
          */
         public boolean shellTap(int x, int y) {
+            engineTrace("shellTap", x + "," + y);
             Process proc = null;
             try {
                 throwIfStopRequested();
@@ -824,6 +856,7 @@ public class OrbScriptEngine {
         }
 
         public boolean click(String text) {
+            engineTrace("click", abbreviateForTrace(text));
             try {
                 AccessibilityNodeInfo root = svc.getRootInActiveWindow();
                 if (root == null) return false;
@@ -850,6 +883,7 @@ public class OrbScriptEngine {
         }
 
         public boolean clickDesc(String desc) {
+            engineTrace("clickDesc", abbreviateForTrace(desc));
             try {
                 AccessibilityNodeInfo root = svc.getRootInActiveWindow();
                 if (root == null) return false;
@@ -864,6 +898,7 @@ public class OrbScriptEngine {
         }
 
         public boolean clickId(String id) {
+            engineTrace("clickId", id);
             try {
                 AccessibilityNodeInfo root = svc.getRootInActiveWindow();
                 if (root == null) return false;
@@ -878,6 +913,7 @@ public class OrbScriptEngine {
         }
 
         public void input(String text) {
+            engineTrace("input", abbreviateForTrace(text));
             try {
                 AccessibilityNodeInfo root = svc.getRootInActiveWindow();
                 if (root == null) return;
@@ -897,6 +933,7 @@ public class OrbScriptEngine {
         }
 
         public boolean paste() {
+            engineTrace("paste", "");
             try {
                 AccessibilityNodeInfo root = svc.getRootInActiveWindow();
                 if (root == null) return false;
@@ -915,6 +952,7 @@ public class OrbScriptEngine {
         }
 
         public void scroll(String direction, int count) {
+            engineTrace("scroll", direction + " x" + count);
             try {
                 throwIfStopRequested();
                 int action;
@@ -941,6 +979,7 @@ public class OrbScriptEngine {
         }
 
         public boolean swipe(int x1, int y1, int x2, int y2, int durationMs) {
+            engineTrace("swipe", x1 + "," + y1 + " → " + x2 + "," + y2 + " " + durationMs + "ms");
             try {
                 throwIfStopRequested();
                 Path path = new Path();
@@ -969,16 +1008,19 @@ public class OrbScriptEngine {
         }
 
         public void back() {
+            engineTrace("back", "");
             svc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK);
         }
 
         public void home() {
+            engineTrace("home", "");
             svc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME);
         }
 
         // ── Sensing ─────────────────────────────────────────────────────
 
         public String screenshot() {
+            engineTrace("screenshot", "");
             // Delegate to the service's existing screenshot handler which returns base64
             try {
                 throwIfStopRequested();
@@ -996,6 +1038,7 @@ public class OrbScriptEngine {
         }
 
         public String ocr() {
+            engineTrace("ocr", "");
             try {
                 throwIfStopRequested();
                 String json = svc.handleOcrForScript();
@@ -1008,6 +1051,7 @@ public class OrbScriptEngine {
         }
 
         public String ocrFind(String text) {
+            engineTrace("ocrFind", abbreviateForTrace(text));
             try {
                 throwIfStopRequested();
                 String json = svc.handleOcrFindForScript(text);
@@ -1020,6 +1064,7 @@ public class OrbScriptEngine {
         }
 
         public String getClipboard() {
+            engineTrace("getClipboard", "");
             try {
                 return svc.getClipboardText();
             } catch (Exception e) {
@@ -1028,6 +1073,7 @@ public class OrbScriptEngine {
         }
 
         public void setClipboard(String text) {
+            engineTrace("setClipboard", abbreviateForTrace(text));
             try {
                 svc.setClipboardText(text);
             } catch (Exception e) {
@@ -1038,6 +1084,7 @@ public class OrbScriptEngine {
         // ── Flow ────────────────────────────────────────────────────────
 
         public void sleep(int ms) {
+            engineTrace("sleep", ms + "ms");
             try {
                 throwIfStopRequested();
                 Thread.sleep(ms);
@@ -1047,6 +1094,7 @@ public class OrbScriptEngine {
         }
 
         public boolean waitForChange(int timeoutMs) {
+            engineTrace("waitForChange", "timeout=" + timeoutMs);
             try {
                 throwIfStopRequested();
                 svc.uiChangeLatch = new CountDownLatch(1);
@@ -1060,6 +1108,7 @@ public class OrbScriptEngine {
         }
 
         public boolean waitForText(String text, int timeoutMs) {
+            engineTrace("waitForText", abbreviateForTrace(text) + " timeout=" + timeoutMs);
             long deadline = System.currentTimeMillis() + timeoutMs;
             while (System.currentTimeMillis() < deadline) {
                 throwIfStopRequested();
@@ -1089,6 +1138,33 @@ public class OrbScriptEngine {
                     Log.e(TAG, "stream log error: " + e.getMessage());
                 }
             }
+            publishLog(LogBus.SOURCE_USER, LogBus.LEVEL_LOG, msg);
+        }
+
+        // Shared hook for engine-level trace lines (tap/click/ocr/...).
+        // Only active when /log-stream has subscribers so we do not build JSON
+        // strings in the hot path when nobody is watching.
+        private void engineTrace(String method, String detail) {
+            if (LogBus.get().subscriberCount() <= 0) return;
+            String msg = detail == null || detail.isEmpty()
+                    ? method
+                    : method + " " + detail;
+            publishLog(LogBus.SOURCE_ENGINE, LogBus.LEVEL_LOG, msg);
+        }
+
+        private void publishLog(String source, String level, String msg) {
+            Long exec = currentExecutionId.get();
+            String execId = exec == null ? "" : String.valueOf(exec);
+            try {
+                LogBus.get().publish(source, level, execId, msg);
+            } catch (Throwable ignored) {
+                // LogBus must never break the script.
+            }
+        }
+
+        private String abbreviateForTrace(String s) {
+            if (s == null) return "";
+            return s.length() > 80 ? s.substring(0, 77) + "..." : s;
         }
 
         // ── Helpers ─────────────────────────────────────────────────────
